@@ -1,0 +1,7 @@
+# Tensorearch runtime dependencies
+#
+# The current codebase uses only the Python standard library at runtime.
+# This file exists for tooling compatibility with workflows that expect
+# a requirements.txt alongside pyproject.toml.
+#
+# Python: >=3.10

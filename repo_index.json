@@ -1,0 +1,57 @@
+﻿{
+    "docs":  {
+                 "AGENT_JSON_USAGE.md":  "file",
+                 "CLAUDE_DEVELOPMENT_GUIDE.md":  "file",
+                 "CLI_USAGE.md":  "file",
+                 "MATH_MODEL.md":  "file",
+                 "OSCILLATOR_TRACE_CHECKLIST.md":  "file",
+                 "ROADMAP.md":  "file",
+                 "TDB_MAPPING.md":  "file",
+                 "TRANSFORMER_TRACE_CHECKLIST.md":  "file"
+             },
+    "examples":  {
+                     "branching_oscillator_trace.json":  "file",
+                     "branching_transformer_trace.json":  "file",
+                     "oscillator_adapter_input.json":  "file",
+                     "sample_trace.json":  "file",
+                     "transformer_adapter_input.json":  "file"
+                 },
+    "src":  {
+                "tensorearch":  {
+                                    "__init__.py":  "file",
+                                    "__main__.py":  "file",
+                                    "adapters.py":  "file",
+                                    "cli.py":  "file",
+                                    "compare.py":  "file",
+                                    "demo.py":  "file",
+                                    "execution.py":  "file",
+                                    "features.py":  "file",
+                                    "graph.py":  "file",
+                                    "intervention.py":  "file",
+                                    "io.py":  "file",
+                                    "metrics.py":  "file",
+                                    "propagation.py":  "file",
+                                    "report.py":  "file",
+                                    "schema.py":  "file"
+                                }
+            },
+    "tests":  {
+                  "test_cli.py":  "file",
+                  "test_compare.py":  "file",
+                  "test_demo.py":  "file",
+                  "test_execution.py":  "file",
+                  "test_fixtures.py":  "file",
+                  "test_intervention.py":  "file",
+                  "test_metrics.py":  "file"
+              },
+    ".gitignore":  "file",
+    "build_exe.ps1":  "file",
+    "CLAUDE_READY_INDEX.md":  "file",
+    "launcher.py":  "file",
+    "LICENSE":  "file",
+    "pyproject.toml":  "file",
+    "README.md":  "file",
+    "requirements.txt":  "file",
+    "tensorearch.spec":  "file",
+    "repo_index.json":  "file"
+}
