@@ -29,6 +29,14 @@ The public repository and README indicate these major objects:
 - estimated total effect
 - ablation / intervention
 
+Tensorearch now includes first-pass counterparts for:
+
+- direction of interest
+- direct effect
+- estimated total effect
+- edge attribution
+- intervention schema
+
 ## Tensorearch: Corresponding Objects
 
 | Transformer Debugger | Tensorearch |
@@ -119,6 +127,22 @@ Then compare:
 \]
 
 This turns bottleneck analysis into a causal experiment.
+
+## Current Prototype Coverage
+
+The current local prototype already supports:
+
+- JSON trace ingestion
+- system-level trace metadata
+- per-slice direct effect
+- per-slice estimated total effect
+- per-edge attribution ranking
+
+What is still missing:
+
+- true gradient-derived objective directions
+- measured intervention replays
+- residual-stream-style decomposition over real model traces
 
 ## Why OTAL Fits
 

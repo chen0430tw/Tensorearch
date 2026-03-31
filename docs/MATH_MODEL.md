@@ -66,7 +66,7 @@ To model pairwise slice interaction, define a weighted chain network:
 
 where \(W \in \mathbb{R}^{n \times n}\) is the coupling matrix.
 
-The edge weight is:
+The naive edge weight is:
 
 \[
 W_{ij} = \sigma\!\left(\langle \phi(s_i), \phi(s_j) \rangle + b\right)
@@ -85,44 +85,74 @@ Interpretation:
 - large \(W_{ij}\): slice \(i\) strongly influences slice \(j\)
 - small \(W_{ij}\): weak coupling
 
-This gives a transport-aware architecture graph instead of a purely symbolic layer list.
-
-## 4. Simulated Topology Over Slices
-
-We define a simulated-topology field over the architecture:
+But for real large-model inspection this is too weak. Tensorearch now uses a more architecture-aware chain weight:
 
 \[
-\mathbf{A}(s_i) = \left(a_1(s_i), a_2(s_i), \dots, a_m(s_i)\right)
+\widehat{W}_{ij}
+= W_{ij}
+\cdot \tau_{ij}
+\cdot \omega_i
+\cdot \rho_j
+\cdot \delta_i
+\cdot \kappa_{ij}
 \]
 
-where each component corresponds to a scale-specific structural observable, for example:
+where:
+
+- \(W_{ij}\): base edge weight
+- \(\tau_{ij}\): transport scale on edge \((i,j)\)
+- \(\omega_i\): source write magnitude
+- \(\rho_j\): destination read sensitivity
+- \(\delta_i\): source direction-of-interest alignment
+- \(\kappa_{ij}\): local-geometry similarity between the two slices
+
+This is closer to how modern LLM internals behave:
+
+- source blocks write different amounts
+- destination blocks are not equally sensitive
+- transport cost depends on the edge, not just on the node
+- local representation geometry matters
+
+This gives a transport-aware architecture graph instead of a purely symbolic layer list.
+
+## 4. Local Vector Space Over Slices
+
+Instead of a single global simulated-topology field, Tensorearch now assigns each slice a local vector space:
+
+\[
+\mathcal{V}_{s_i} \subset \mathbb{R}^{m}
+\]
+
+and a local topology vector:
+
+\[
+\mathbf{v}(s_i) = \left(v_1(s_i), v_2(s_i), \dots, v_m(s_i)\right)
+\]
+
+where each component corresponds to a local structural observable, for example:
 
 - local compute density
 - local memory congestion
 - neighborhood synchronization pressure
 - medium-range routing dispersion
-- global transport imbalance
+- local routing anisotropy
+- downstream pressure sensitivity
 
-This creates a multi-scale topological profile for every slice.
-
-The inner product between two slice topology vectors is:
-
-\[
-\langle \mathbf{A}(s_i), \mathbf{A}(s_j) \rangle
-= \sum_{k=1}^{m} a_k(s_i) a_k(s_j)
-\]
-
-and the norm:
+The local similarity between two slices is:
 
 \[
-\|\mathbf{A}(s_i)\| = \sqrt{\sum_{k=1}^{m} a_k(s_i)^2}
+\kappa_{ij}
+= \frac{\langle \mathbf{v}(s_i), \mathbf{v}(s_j) \rangle}
+{\|\mathbf{v}(s_i)\|\,\|\mathbf{v}(s_j)\|}
 \]
 
-These quantities measure topological similarity and local fluctuation magnitude.
+or in implementation, a clipped cosine similarity mapped into \([0,1]\).
+
+This local-vector-space view is more practical than a single global simulated-topology object because it aligns naturally with per-layer and per-subgraph trace collection.
 
 ## 5. Multi-Scale Nested Structure
 
-Following the simulated-topology idea, we define nested slice subspaces:
+Following the local-vector-space idea, we define nested slice subspaces:
 
 \[
 V_0(s_i) \supset V_1(s_i) \supset \dots \supset V_r(s_i)
@@ -231,6 +261,102 @@ Measures whether the architecture is over-coupled, under-coupled, or balanced.
 
 Tests whether the mathematical inspection model predicts the real bottleneck.
 
+### 8.6 Freedom Index
+
+To estimate whether a slice has too many latent ways to deviate from intended behavior, define:
+
+\[
+\mathrm{FI}(i) = H(P_{i\to *}) + \alpha \|\mathbf{v}(s_i)\| + \beta \,\omega_i \rho_i
+\]
+
+where:
+
+- \(H(P_{i\to *})\): entropy of outgoing routing probability
+- \(\|\mathbf{v}(s_i)\|\): local vector-space span
+- \(\omega_i \rho_i\): write/read freedom term
+
+Interpretation:
+
+- high FI: the slice has more structural freedom to reroute or express alternative behavior
+- low FI: the slice is more constrained
+
+### 8.7 Compliance Index
+
+To estimate whether a slice is acting in line with its intended direction rather than merely appearing aligned, define:
+
+\[
+\mathrm{CI}(i) = \frac{\theta_i}{1 + \mathrm{FI}(i) + |\delta_i - \theta_i|}
+\]
+
+where:
+
+- \(\theta_i\): intended obedience target
+- \(\delta_i\): observed direction-of-interest alignment
+
+Interpretation:
+
+- high CI: the slice is structurally constrained and close to the intended direction
+- low CI: the slice has either too much freedom or substantial deviation, suggesting "阳奉阴违" risk
+
+In the current prototype, \(\theta_i\) is no longer hand-filled in the trace. It is inferred from slice type and runtime profile:
+
+- attention slices: high target, reduced by stall pressure
+- FFN slices: high target, reduced by memory-dominance pressure
+- communication slices: near-max target because protocol compliance is expected
+- readout slices: high but not absolute target
+
+### 8.8 Dynamical Entropy Family
+
+To express model "smartness" as controlled adaptive freedom rather than raw obedience, Tensorearch introduces a family of dynamical entropies.
+
+Routing entropy:
+
+\[
+H_{\mathrm{route}}(i) = \mathcal{H}(P_{i \to *})
+\]
+
+measures how broadly a slice spreads its outgoing influence.
+
+Effect entropy:
+
+\[
+H_{\mathrm{effect}}(i) = \mathcal{H}\!\left(P_{i \to j}\,\mathrm{ETE}(j)\right)
+\]
+
+measures whether the slice distributes effect across multiple downstream targets or collapses into a single path.
+
+Compliance entropy:
+
+\[
+H_{\mathrm{comp}}(i) = \mathcal{H}\!\left(\frac{\mathrm{CI}(i)}{\theta_i}, 1-\frac{\mathrm{CI}(i)}{\theta_i}\right)
+\]
+
+measures whether the slice behaves in a rigidly obedient regime or in a mixed regime.
+
+### 8.9 Intelligence Index
+
+The prototype "smartness" quantity is:
+
+\[
+\mathrm{II}(i)
+= \left(\frac{H_{\mathrm{route}}(i) + H_{\mathrm{effect}}(i)}{2}\right)
+\cdot
+\frac{\mathrm{CI}(i)}{1+\mathrm{FI}(i)}
+\cdot
+\left(1 + H_{\mathrm{comp}}(i)\right)
+\]
+
+Interpretation:
+
+- high II: the slice keeps multiple useful pathways while remaining sufficiently aligned
+- low II: the slice is either too rigid, too chaotic, or too free relative to its compliance
+
+This is meant to distinguish:
+
+- genuinely adaptive intelligence
+- brittle obedience
+- and "阳奉阴违" style covert freedom
+
 ## 9. Research Hypothesis
 
 Tensorearch starts from this hypothesis:
@@ -245,7 +371,7 @@ In other words, two models with similar size may behave very differently because
 
 1. define a JSON schema for slices and edges
 2. ingest traces from model runs
-3. build \(X\), \(W\), and simulated-topology descriptors
+3. build \(X\), \(\widehat{W}\), and local-vector-space descriptors
 4. estimate \(\tilde{c}_i\) and rank bottlenecks
 5. compare predicted bottlenecks against measured throughput
 
