@@ -14,7 +14,7 @@ def _log1p(x: float) -> float:
 
 def infer_local_vector_space(slice_state: SliceState) -> list[float]:
     op = slice_state.op_type or slice_state.kind
-    if op in {"attn", "attn_qkv", "attn_score", "attn_out", "attention"}:
+    if op in {"attn", "attn_q", "attn_k", "attn_v", "attn_qkv", "attn_score", "attn_out", "attn_adj", "attn_phase", "attention"}:
         return [
             _safe_ratio(slice_state.flops, max(slice_state.tokens_in, 1)),
             _safe_ratio(slice_state.kv_bytes, max(slice_state.activation_bytes, 1.0)),
@@ -53,7 +53,7 @@ def infer_local_vector_space(slice_state: SliceState) -> list[float]:
 
 def infer_obedience_target(slice_state: SliceState) -> float:
     op = slice_state.op_type or slice_state.kind
-    if op in {"attn", "attn_qkv", "attn_score", "attn_out", "attention"}:
+    if op in {"attn", "attn_q", "attn_k", "attn_v", "attn_qkv", "attn_score", "attn_out", "attn_adj", "attn_phase", "attention"}:
         base = 0.95
         penalty = 0.15 * _safe_ratio(slice_state.stall_ms, max(slice_state.measured_latency_ms, 1.0))
         return max(0.55, base - penalty)

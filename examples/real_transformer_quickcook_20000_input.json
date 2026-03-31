@@ -1,0 +1,26 @@
+{
+  "name": "real-transformer-quickcook-20000",
+  "num_layers": 4,
+  "hidden_size": 256,
+  "intermediate_size": 1024,
+  "num_heads": 4,
+  "kv_heads": 4,
+  "batch_size": 32,
+  "seq_len": 128,
+  "dtype": "bf16",
+  "device": "H100",
+  "tp_degree": 1,
+  "pp_degree": 1,
+  "measured_latency_ms": 14.51,
+  "measured_tokens_per_sec": 282528.0,
+  "metadata": {
+    "source": "nano5_quickcook_login",
+    "output_dir": "/work/twsuday816/osc_quickcook_output_login_20260331_195522",
+    "steps": 20000,
+    "total_tokens": 81920000,
+    "final_loss": 5.0540,
+    "model_arch": "transformer",
+    "compile_threads": 9,
+    "hlbd_enabled": true
+  }
+}
