@@ -1,13 +1,23 @@
 # Tensorearch
 
-Tensorearch is a model-architecture inspection tool for analyzing how slice structure, coupling topology, and execution geometry shape throughput in large language models.
+Tensorearch is a topology-aware model-architecture inspection tool for analyzing how slice structure, coupling topology, and execution geometry shape throughput in large language models.
 
-It combines four ideas:
+The name should be read as:
+
+- `Tensor`
+- `Research`
+- `Search`
+
+It is not a training framework. It is an architecture debugger.
+
+## What It Combines
+
+Tensorearch combines four ideas:
 
 - OpenAI Transformer Debugger style inspection workflow
 - OTAL-inspired propagation topology
-- weighted chain analysis
-- simulated-topology / multi-scale structural modeling
+- weighted-chain coupling analysis
+- local-vector-space structural modeling
 
 ## Core Question
 
@@ -16,7 +26,8 @@ Given a model execution graph, Tensorearch asks:
 - which slices dominate latency?
 - which couplings amplify congestion?
 - which structural regimes create poor throughput despite similar parameter count?
-- can architecture quality be inspected mathematically rather than only benchmarked empirically?
+- where is the bottleneck actually localized?
+- is the model structurally obedient, overly free, or strategically adaptive?
 
 ## Conceptual Position
 
@@ -38,15 +49,96 @@ Tensorearch shifts the inspection unit upward to:
 
 The intended result is an architecture debugger rather than a neuron debugger.
 
-## Current Scope
+## Implemented Scope
 
-Phase 1 is mathematical and structural:
+Tensorearch already includes:
 
-1. define slice-state encoding
-2. define weighted-chain coupling
-3. define simulated-topology observables
-4. define OTAL-like propagation over architecture graphs
-5. derive bottleneck and throughput metrics
+- JSON trace schema for model/system/slice/edge data
+- feature enrichment for:
+  - local vector spaces
+  - transport-scale estimation
+  - obedience-target inference
+- weighted-chain propagation
+- bottleneck and congestion metrics
+- freedom / compliance / intelligence metrics
+- intervention engine
+- cross-architecture comparison engine
+- agent-friendly JSON CLI
+- Windows `exe` packaging
+
+## Current Metrics
+
+Current reports can emit:
+
+- predicted bottleneck
+- global coupling efficiency
+- global obedience score
+- global intelligence score
+- per-slice:
+  - propagated cost
+  - bottleneck index
+  - congestion
+  - freedom index
+  - compliance index
+  - route entropy
+  - effect entropy
+  - intelligence index
+- edge attribution rankings
+
+## CLI
+
+Source mode:
+
+```powershell
+python -m tensorearch --help
+python -m tensorearch inspect <trace.json> --json
+python -m tensorearch compare <left.json> <right.json> --json
+python -m tensorearch ablate <trace.json> --kind <kind> --target <target> --json
+python -m tensorearch export --mode inspect --left <trace.json> --output out.json --json
+python -m tensorearch adapt --adapter transformer --input adapter_input.json --output out.json
+```
+
+Packaged Windows CLI:
+
+```powershell
+dist\tensorearch.exe --help
+dist\tensorearch.exe inspect examples\sample_trace.json --json
+```
+
+Global CLI behavior:
+
+- `--help`
+- `-v / --verbose`
+- `--json`
+
+## Real Trace Workflow
+
+Tensorearch is designed to consume either:
+
+- hand-authored trace JSON
+- adapted JSON from another source
+- real profiling traces exported from training scripts
+
+Current integration work already connects to `APT-Transformer` quickcook profiling so short profiling runs can emit:
+
+- `tensorearch_trace.json`
+
+This enables direct comparison of real short-profile traces from:
+
+- `Transformer`
+- `Oscillator`
+
+## Current Architectural Findings
+
+On the current `QuickCook + HLBD` line:
+
+- Transformer remains the stronger practical baseline in long-run quickcook quality / throughput.
+- Oscillator currently pays extra cost for its phase/propagation path.
+- After finer-grained profiling, the main local hotspots are:
+  - Transformer: `score`
+  - Oscillator: `adj`
+
+This is exactly the kind of localization Tensorearch is meant to provide.
 
 ## Repository Layout
 
@@ -54,26 +146,46 @@ Phase 1 is mathematical and structural:
   - core mathematical model
 - `docs/TDB_MAPPING.md`
   - Transformer Debugger to Tensorearch mapping
+- `docs/CLI_USAGE.md`
+  - full CLI usage and JSON behavior
+- `docs/TRANSFORMER_TRACE_CHECKLIST.md`
+  - transformer trace checklist
+- `docs/OSCILLATOR_TRACE_CHECKLIST.md`
+  - oscillator trace checklist
+- `docs/AGENT_JSON_USAGE.md`
+  - agent / pipeline JSON consumption guide
+- `docs/CLAUDE_DEVELOPMENT_GUIDE.md`
+  - collaboration guide for Claude
 - `src/tensorearch/`
-  - package skeleton
+  - package source
 - `tests/`
-  - future metric and schema tests
+  - schema, fixtures, CLI, and comparison tests
+- `examples/`
+  - sample traces and adapter inputs
 - `CLAUDE_READY_INDEX.md`
   - quick handoff index for agents
 
-## Planned Outputs
+## Testing Status
 
-Tensorearch should eventually emit:
+The current repository test suite passes locally with:
+
+- `37 passed`
+
+This includes:
+
+- fixture traces
+- CLI subcommands
+- comparison flows
+- intervention flows
+- export / adapt behavior
+
+## Intended Outputs
+
+Tensorearch emits:
 
 - slice bottleneck rankings
 - coupling-congestion maps
-- throughput predictors
-- architecture-level circuit summaries
+- architecture-level compliance / intelligence summaries
+- intervention deltas
 - cross-architecture comparison reports
-
-## Near-Term Plan
-
-1. finalize the mathematical schema
-2. define trace ingestion format
-3. build graph + metric primitives
-4. validate on Transformer vs Oscillator style architectures
+- agent-friendly JSON summaries for downstream tooling
