@@ -49,6 +49,102 @@ Tensorearch shifts the inspection unit upward to:
 
 The intended result is an architecture debugger rather than a neuron debugger.
 
+## Relation To Similar Tools
+
+Tensorearch is not trying to replace existing tooling. It sits at a different layer.
+
+### Compared with Transformer Debugger
+
+Transformer Debugger is strongest when the question is:
+
+- why did the model produce this token?
+- which head / neuron / latent drove this behavior?
+- what circuit implements this behavior?
+
+Tensorearch is strongest when the question is:
+
+- why is this architecture slower than another one?
+- which slice is the true bottleneck?
+- where does coupling topology fail to become useful structure?
+- why does a new architecture underperform a simpler baseline?
+
+Short version:
+
+- Transformer Debugger = behavior / circuit microscope
+- Tensorearch = architecture / topology microscope
+
+### Compared with Profilers
+
+Classic profilers answer:
+
+- where time is spent
+- where memory is spent
+- which kernels are hot
+
+Tensorearch uses profiler-like inputs, but pushes one level higher:
+
+- how slices couple
+- how bottlenecks propagate
+- which structural regimes create congestion
+- whether a path is merely expensive or strategically meaningful
+
+So a profiler is an input source; Tensorearch is an interpretation layer over model structure.
+
+### Compared with Benchmark Dashboards
+
+Benchmark dashboards tell you:
+
+- final loss
+- final quality
+- throughput
+- memory footprint
+
+Tensorearch tries to explain *why* those numbers happen.
+
+It is intended for cases where benchmark outcomes alone are too coarse, especially for:
+
+- new architectures
+- routing-heavy models
+- non-standard attention replacements
+- models that may be paying extra compute cost without getting matching capability gains
+
+### Compared with Generic Interpretability Tools
+
+Many interpretability tools stay close to:
+
+- token attribution
+- feature activation
+- neuron or head saliency
+
+Tensorearch instead reasons over:
+
+- execution slices
+- transport edges
+- local vector spaces
+- weighted chains
+- structural obedience / freedom / intelligence
+
+That makes it more suitable for architecture diagnosis than for token-level behavioral explanation.
+
+### Practical Positioning
+
+In practice, Tensorearch is best used together with other tools:
+
+- profiler: collect timing / memory / kernel data
+- benchmark suite: establish empirical performance
+- interpretability tooling: inspect token-level behavior
+- Tensorearch: connect those observations back to architecture-level failure modes
+
+Its purpose is not to say only that a model is worse than a baseline.
+Its purpose is to localize *why* it is worse, and whether the failure comes from:
+
+- routing
+- coupling
+- propagation
+- communication
+- structural inefficiency
+- or a mismatch between extra structure and actual downstream gain
+
 ## Implemented Scope
 
 Tensorearch already includes:
