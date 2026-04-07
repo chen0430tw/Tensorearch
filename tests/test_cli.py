@@ -81,3 +81,32 @@ def test_cli_adapt_transformer(tmp_path):
     )
     text = out.read_text(encoding="utf-8")
     assert '"predicted_bottleneck"' in text
+
+
+def test_cli_space_json(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "sample_model.py"
+    src.write_text(
+        "\n".join(
+            [
+                "class MLA: pass",
+                "class MoE: pass",
+                "kv_cache = None",
+                "n_routed_experts = 64",
+                "n_shared_experts = 2",
+                "def attention(x):",
+                "    return x",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "tensorearch", "space", "--source-file", str(src), "--json"],
+        cwd=root,
+        env=_env_with_src(),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert '"quadrupole_projection"' in result.stdout
+    assert '"classification"' in result.stdout

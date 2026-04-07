@@ -192,6 +192,7 @@ python -m tensorearch compare <left.json> <right.json> --json
 python -m tensorearch ablate <trace.json> --kind <kind> --target <target> --json
 python -m tensorearch export --mode inspect --left <trace.json> --output out.json --json
 python -m tensorearch adapt --adapter transformer --input adapter_input.json --output out.json
+python -m tensorearch space --source-file path/to/model.py --json
 ```
 
 Packaged Windows CLI:
@@ -199,6 +200,7 @@ Packaged Windows CLI:
 ```powershell
 dist\tensorearch.exe --help
 dist\tensorearch.exe inspect examples\sample_trace.json --json
+dist\tensorearch.exe space --source-file examples\sample_model.py --json
 ```
 
 Global CLI behavior:
@@ -223,6 +225,35 @@ This enables direct comparison of real short-profile traces from:
 
 - `Transformer`
 - `Oscillator`
+
+## Quadrupole Space Projection
+
+Tensorearch now also supports a source-driven quadrupole space projection.
+
+The current quadrupole axes are:
+
+- `X`: residual
+- `Y`: latent-attention
+- `Z`: kv-transport
+- `W`: propagation
+
+The CLI can infer a density profile from source code and project it into this shared coordinate system:
+
+```powershell
+python -m tensorearch space --source-file path/to/model.py --json
+```
+
+This is meant to answer:
+
+- is this architecture still residual-dominant?
+- is it primarily shifting into latent-attention space?
+- is it mostly a KV backend variant?
+- is it propagation-driven?
+
+It also emits extension terms for:
+
+- `expert_extension`
+- `ffn_extension`
 
 ## Current Architectural Findings
 

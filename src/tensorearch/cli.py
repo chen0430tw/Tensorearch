@@ -11,6 +11,7 @@ from .intervention import apply_intervention
 from .io import load_graph_from_json
 from .report import export_comparison_report, export_inspect_report, export_payload
 from .schema import Intervention
+from .space import analyze_source_file, space_report, space_report_json
 
 
 def _load_graph(path: str):
@@ -66,6 +67,11 @@ def main() -> None:
     adapt_p.add_argument("--adapter", choices=["transformer", "oscillator"], required=True)
     adapt_p.add_argument("--input", required=True, help="high-level adapter payload JSON")
     adapt_p.add_argument("--output", required=True, help="output trace JSON path")
+
+    space_p = sub.add_parser("space", help="analyze a source file and project it into the quadrupole space")
+    space_p.add_argument("--source-file", required=True)
+    space_p.add_argument("--output", default="")
+    space_p.add_argument("--json", action="store_true", help="emit machine-readable JSON output")
 
     args = parser.parse_args()
 
@@ -125,4 +131,16 @@ def main() -> None:
         export_payload(demo_payload(graph), args.output)
         if args.verbose:
             print(f"[verbose] adapted adapter={args.adapter} input={args.input} output={args.output}")
+        return
+
+    if args.cmd == "space":
+        payload = analyze_source_file(args.source_file)
+        if args.verbose:
+            print(f"[verbose] source_file={args.source_file}")
+        report = space_report_json(payload) if args.json else space_report(payload)
+        print(report)
+        if args.output:
+            Path(args.output).write_text(report, encoding="utf-8")
+            if args.verbose:
+                print(f"[verbose] wrote report={args.output}")
         return
