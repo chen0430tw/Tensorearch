@@ -110,3 +110,68 @@ def test_cli_space_json(tmp_path):
     )
     assert '"quadrupole_projection"' in result.stdout
     assert '"classification"' in result.stdout
+
+
+def test_cli_diagnose_json(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "score_logic.py"
+    src.write_text(
+        "\n".join(
+            [
+                "attention_map = [",
+                "    ('seed_turbulence', 'conservatism', 3.0, 'align'),",
+                "    ('seed_turbulence', 'aggressiveness', 2.5, 'oppose'),",
+                "]",
+                "def score(xs):",
+                "    score = 0.0",
+                "    score += 1.0",
+                "    score *= 0.7",
+                "    return max(0.0, min(1.0, score))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "tensorearch", "diagnose", "--source-file", str(src), "--json"],
+        cwd=root,
+        env=_env_with_src(),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert '"findings"' in result.stdout
+    assert '"entropy_clusters"' in result.stdout
+    assert '"cluster"' in result.stdout
+    assert '"logic_labels"' in result.stdout
+    assert '"scoring_logic"' in result.stdout
+    assert '"conflicting_signal"' in result.stdout
+    assert '"score_normalization"' in result.stdout
+
+
+def test_cli_diagnose_shell(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "score_logic.ps1"
+    src.write_text(
+        "\n".join(
+            [
+                "$score = 0",
+                "$score = 1",
+                "$score = 2",
+                "Get-Content x | Select-String y",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "tensorearch", "diagnose", "--source-file", str(src), "--json"],
+        cwd=root,
+        env=_env_with_src(),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert '"language": "shell"' in result.stdout
+    assert '"entropy_clusters"' in result.stdout
+    assert '"logic_labels"' in result.stdout
+    assert '"pipeline_logic"' in result.stdout
+    assert '"repeated_overwrite"' in result.stdout

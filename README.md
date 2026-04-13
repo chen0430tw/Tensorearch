@@ -193,6 +193,7 @@ python -m tensorearch ablate <trace.json> --kind <kind> --target <target> --json
 python -m tensorearch export --mode inspect --left <trace.json> --output out.json --json
 python -m tensorearch adapt --adapter transformer --input adapter_input.json --output out.json
 python -m tensorearch space --source-file path/to/model.py --json
+python -m tensorearch diagnose --source-file path/to/script.py --json
 ```
 
 Packaged Windows CLI:
@@ -201,6 +202,7 @@ Packaged Windows CLI:
 dist\tensorearch.exe --help
 dist\tensorearch.exe inspect examples\sample_trace.json --json
 dist\tensorearch.exe space --source-file examples\sample_model.py --json
+dist\tensorearch.exe diagnose --source-file path\to\script.py --json
 ```
 
 Global CLI behavior:

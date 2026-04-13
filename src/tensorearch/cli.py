@@ -7,6 +7,7 @@ from pathlib import Path
 from .adapters import graph_from_oscillator_trace, graph_from_transformer_trace
 from .compare import comparison_report, comparison_report_json
 from .demo import demo_payload, demo_report, demo_report_json
+from .diagnose import analyze_logic_file, diagnose_report, diagnose_report_json
 from .intervention import apply_intervention
 from .io import load_graph_from_json
 from .report import export_comparison_report, export_inspect_report, export_payload
@@ -73,6 +74,11 @@ def main() -> None:
     space_p.add_argument("--output", default="")
     space_p.add_argument("--json", action="store_true", help="emit machine-readable JSON output")
 
+    diagnose_p = sub.add_parser("diagnose", help="diagnose source-level logic smells in Python or shell scripts")
+    diagnose_p.add_argument("--source-file", required=True)
+    diagnose_p.add_argument("--output", default="")
+    diagnose_p.add_argument("--json", action="store_true", help="emit machine-readable JSON output")
+
     args = parser.parse_args()
 
     if args.cmd == "inspect":
@@ -138,6 +144,18 @@ def main() -> None:
         if args.verbose:
             print(f"[verbose] source_file={args.source_file}")
         report = space_report_json(payload) if args.json else space_report(payload)
+        print(report)
+        if args.output:
+            Path(args.output).write_text(report, encoding="utf-8")
+            if args.verbose:
+                print(f"[verbose] wrote report={args.output}")
+        return
+
+    if args.cmd == "diagnose":
+        payload = analyze_logic_file(args.source_file)
+        if args.verbose:
+            print(f"[verbose] source_file={args.source_file}")
+        report = diagnose_report_json(payload) if args.json else diagnose_report(payload)
         print(report)
         if args.output:
             Path(args.output).write_text(report, encoding="utf-8")

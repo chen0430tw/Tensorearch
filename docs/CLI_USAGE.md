@@ -233,6 +233,82 @@ See `examples/transformer_adapter_input.json` and `examples/oscillator_adapter_i
 
 ---
 
+### diagnose
+
+Diagnose source-level logic smells in Python or shell scripts.
+
+```bash
+python -m tensorearch diagnose --source-file path/to/script.py
+python -m tensorearch diagnose --source-file path/to/script.py --json
+```
+
+The diagnostic report is intended for:
+
+- multi-stage scoring logic
+- conflicting weighted signals
+- repeated score mutation
+- fallback reconstruction from downstream outputs
+- shell script overwrite / branch / pipeline visibility
+- entropy-based grouping of logic scopes into low / medium / high entropy clusters
+
+**Arguments:**
+
+| Argument | Required | Description |
+|---|---|---|
+| `--source-file` | yes | path to a Python or shell script |
+| `--json` | no | emit machine-readable JSON output |
+| `--output` | no | write the report to this file path in addition to stdout |
+
+**JSON output keys:**
+
+```json
+{
+  "language": "python",
+  "source_file": "path/to/script.py",
+  "summary": {
+    "n_findings": 3,
+    "n_strengths": 2,
+    "n_entropy_clusters": 2,
+    "overall_assessment": "needs_review"
+  },
+  "entropy_clusters": [
+    {
+      "scope": "function",
+      "name": "score",
+      "cluster": "medium_entropy",
+      "entropy": 1.58,
+      "dominant_signal": "call",
+      "logic_labels": ["scoring_logic", "gating_logic"],
+      "counts": {
+        "assign": 1,
+        "aug_assign": 2,
+        "call": 2
+      }
+    }
+  ],
+  "findings": [
+    {
+      "severity": "warning",
+      "kind": "conflicting_signal",
+      "message": "Feature 'x' drives both align and oppose rules.",
+      "line": 12,
+      "symbol": "x"
+    }
+  ],
+  "strengths": [
+    {
+      "severity": "info",
+      "kind": "score_normalization",
+      "message": "Function 'score' combines normalization with explicit score bounds.",
+      "line": 40,
+      "symbol": "score"
+    }
+  ]
+}
+```
+
+---
+
 ## Global Flags
 
 | Flag | Description |
