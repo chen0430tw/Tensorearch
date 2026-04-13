@@ -291,8 +291,9 @@ _FAMILY_TEMPLATES: dict[str, list[dict]] = {
         {"kind": "structure_head", "op_type": "mlp", "flops_base": 4.0, "mem_base": 3.0},
     ],
     "baseline_residual": [
-        {"kind": "attention", "op_type": "attn", "flops_base": 5.0, "mem_base": 4.0},
-        {"kind": "ffn", "op_type": "ffn", "flops_base": 4.5, "mem_base": 3.5},
+        {"kind": "conv", "op_type": "conv", "flops_base": 4.0, "mem_base": 3.0},
+        {"kind": "pool", "op_type": "pool", "flops_base": 1.0, "mem_base": 0.5},
+        {"kind": "dense", "op_type": "fc", "flops_base": 3.0, "mem_base": 2.5},
     ],
     "propagation": [
         {"kind": "phase", "op_type": "phase", "flops_base": 4.0, "mem_base": 3.5},
