@@ -227,6 +227,14 @@ For source-level `diagnose`, each module/function/script scope now includes a `m
 - `hotspots`
   - modular residues or topological bins with unusually dense activity
 
+This is especially useful when a system is "stuck but not obviously broken".
+In that situation, Tensorearch should be used as an instrumentation layer first:
+
+- do not keep tuning weights blindly
+- diagnose which fine-grained scopes have concentrated or mixed flow
+- separate training-loop bottlenecks from representation-layer bottlenecks
+- only then decide whether to change optimization, features, or core logic
+
 Global CLI behavior:
 
 - `--help`

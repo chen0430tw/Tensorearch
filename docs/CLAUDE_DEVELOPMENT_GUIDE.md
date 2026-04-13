@@ -57,6 +57,18 @@ Claude may also extend:
 - `adapt` input examples
 - agent-facing JSON fixtures
 
+Claude may help document or test new diagnosis layers, but should treat them as instrumentation first, not as excuses for blind retuning.
+When a model or logic system is plateaued but not clearly broken, the preferred order is:
+
+1. add or use the smallest useful diagnosis capability
+2. localize the bottleneck at fine-grained scope level
+3. only then propose weight changes or logic rewrites
+
+This is particularly important for `diagnose` / source-analysis workflows:
+
+- if `train_attention.py` is structurally uniform but `candidate_attention.py` is mixed or concentrated, the bottleneck is likely representation-side, not optimizer-side
+- do not keep pushing parameter tweaks when the diagnosis layer already shows where flow concentration lives
+
 ## Do Not Edit Without Coordination
 
 Claude should not independently change:

@@ -340,6 +340,20 @@ The diagnostic report is intended for:
 - `insufficient_signal`
   - scope is too small to support a meaningful modular-flow judgment
 
+**When to use it:**
+
+- when training metrics plateau and repeated tuning is not clarifying the cause
+- when pairwise ranking looks good but top-1 keeps missing
+- when the code "works" but decisions still feel black-box
+- when you need to tell whether the bottleneck is in optimization logic or in fine-grained feature integration
+
+Recommended workflow:
+
+1. run `diagnose` on both the runtime scorer and the training script
+2. inspect the `modular_flow` summary section
+3. if the trainer is mostly `uniform_flow` but the scorer has `mixed_flow` or `concentrated_flow`, fix representation / integration first
+4. only keep tuning weights after the concentrated logic hotspots are understood
+
 ---
 
 ## Global Flags
