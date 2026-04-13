@@ -86,6 +86,8 @@ def main() -> None:
     diagnose_p.add_argument("--output", default="")
     diagnose_p.add_argument("--json", action="store_true", help="emit machine-readable JSON output")
 
+    sub.add_parser("help", help="show detailed usage guide")
+
     args = parser.parse_args()
 
     if args.cmd == "inspect":
@@ -173,3 +175,77 @@ def main() -> None:
             if args.verbose:
                 print(f"[verbose] wrote report={args.output}")
         return
+
+    if args.cmd == "help":
+        _print_help()
+        return
+
+
+def _print_help() -> None:
+    print("""Tensorearch — Architecture Inspection Toolkit
+
+COMMANDS
+  inspect   Inspect a model trace and report bottlenecks
+            tensorearch inspect trace.json [--json] [--output out.txt]
+
+  compare   Compare two traces side by side
+            tensorearch compare left.json right.json [--json]
+
+  ablate    Simulate an intervention and show before/after delta
+            tensorearch ablate trace.json --kind <kind> --target <slice> [--value N] [--json]
+            kinds: remove_slice, mask_edge, scale_edge_bandwidth,
+                   set_write_magnitude, set_read_sensitivity, set_doi_alignment, swap_topology
+
+  adapt     Convert source code or architecture description into a trace
+            tensorearch adapt --adapter source --input model.py --output trace.json
+            tensorearch adapt --adapter transformer --input desc.json --output trace.json
+            tensorearch adapt --adapter oscillator --input desc.json --output trace.json
+            tensorearch adapt --adapter family --family diffusion_unet --input desc.json --output trace.json
+
+  space     Classify source code into one of 15 model families
+            tensorearch space --source-file model.py [--json]
+
+  diagnose  Audit source-level logic: entropy clusters, modular flow, mutation tracking
+            tensorearch diagnose --source-file script.py [--json]
+
+  export    Write inspect or compare results to a file
+            tensorearch export --mode inspect --left trace.json --output out.json [--json]
+            tensorearch export --mode compare --left a.json --right b.json --output out.json [--json]
+
+MODEL FAMILIES (space classification)
+  baseline residual          Conv/Dense networks (e.g. MNIST, ResNet)
+  latent-attention dominant  Transformers (e.g. GPT, BERT, LLaMA)
+  diffusion-unet dominant    Diffusion models (e.g. Stable Diffusion)
+  adapterization dominant    LoRA, PEFT, hypernetworks
+  runtime-wrapper dominant   Triton kernels, quantization wrappers
+  video-temporal dominant    Video generation (e.g. AnimateDiff, UNet3D)
+  audio-spectral dominant    Audio/music (e.g. mel spectrograms, vocoders)
+  3d-generative dominant     3D (e.g. NeRF, Gaussian splatting)
+  speech-language dominant   ASR/TTS (e.g. Whisper, GPT-SoVITS)
+  world-model dominant       Environment simulators (e.g. MDRNN, GameGAN)
+  multimodal-alignment       VLMs (e.g. BLIP-2, Q-Former)
+  graph-message-passing      GNNs (e.g. GCN, GAT, PyG)
+  vision-detection dominant  Object detection (e.g. Detectron2, RCNN)
+  bio-sequence dominant      Protein/bio (e.g. ESM, Evoformer)
+  propagation dominant       Phase/oscillation-based models
+
+GLOBAL FLAGS
+  -v, --verbose   Print extra execution details
+  --json          Emit machine-readable JSON output
+  --output PATH   Write output to file
+
+EXAMPLES
+  # Classify a model source file
+  tensorearch space --source-file model.py --json
+
+  # Full pipeline: source → trace → inspect → ablate
+  tensorearch adapt --adapter source --input model.py --output trace.json
+  tensorearch inspect trace.json
+  tensorearch ablate trace.json --kind remove_slice --target blk0.conv
+
+  # Compare two architectures
+  tensorearch compare transformer.json oscillator.json --json
+
+  # Diagnose scoring logic
+  tensorearch diagnose --source-file scorer.py --json
+""")
