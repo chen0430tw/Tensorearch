@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from .adapters import graph_from_oscillator_trace, graph_from_transformer_trace
+from .adapters import graph_from_oscillator_trace, graph_from_transformer_trace, graph_from_family, graph_from_source_file
 from .compare import comparison_report, comparison_report_json
 from .demo import demo_payload, demo_report, demo_report_json
 from .diagnose import analyze_logic_file, diagnose_report, diagnose_report_json
@@ -19,11 +19,17 @@ def _load_graph(path: str):
     return load_graph_from_json(path)
 
 
-def _build_from_adapter(adapter: str, payload: dict):
+def _build_from_adapter(adapter: str, payload: dict, family: str = "", input_path: str = ""):
     if adapter == "transformer":
         return graph_from_transformer_trace(payload)
     if adapter == "oscillator":
         return graph_from_oscillator_trace(payload)
+    if adapter == "family":
+        if not family:
+            raise ValueError("--family is required for --adapter family")
+        return graph_from_family(payload, family)
+    if adapter == "source":
+        return graph_from_source_file(input_path)
     raise ValueError(f"unknown adapter: {adapter}")
 
 
@@ -65,9 +71,10 @@ def main() -> None:
     export_p.add_argument("--json", action="store_true", help="write machine-readable JSON output")
 
     adapt_p = sub.add_parser("adapt", help="convert a high-level architecture payload into a trace JSON")
-    adapt_p.add_argument("--adapter", choices=["transformer", "oscillator"], required=True)
-    adapt_p.add_argument("--input", required=True, help="high-level adapter payload JSON")
+    adapt_p.add_argument("--adapter", choices=["transformer", "oscillator", "family", "source"], required=True)
+    adapt_p.add_argument("--input", required=True, help="adapter payload JSON or source file (for --adapter source)")
     adapt_p.add_argument("--output", required=True, help="output trace JSON path")
+    adapt_p.add_argument("--family", default="", help="family name (for --adapter family)")
 
     space_p = sub.add_parser("space", help="analyze a source file and project it into the quadrupole space")
     space_p.add_argument("--source-file", required=True)
@@ -132,8 +139,12 @@ def main() -> None:
         return
 
     if args.cmd == "adapt":
-        payload = _load_payload(args.input)
-        graph = _build_from_adapter(args.adapter, payload)
+        if args.adapter == "source":
+            payload = {}
+            graph = _build_from_adapter(args.adapter, payload, input_path=args.input)
+        else:
+            payload = _load_payload(args.input)
+            graph = _build_from_adapter(args.adapter, payload, family=args.family)
         export_payload(demo_payload(graph), args.output)
         if args.verbose:
             print(f"[verbose] adapted adapter={args.adapter} input={args.input} output={args.output}")

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from .features import enrich_graph
 from .graph import ArchitectureGraph
 from .schema import SliceEdge, SliceState, SystemTrace
+from .space import analyze_source_file
 
 
 def _base_system(name: str, model_arch: str, payload: dict) -> SystemTrace:
@@ -213,3 +216,168 @@ def graph_from_oscillator_trace(payload: dict) -> ArchitectureGraph:
             )
         )
     return enrich_graph(graph)
+
+
+# ================================================================
+# Family-aware slice templates
+# ================================================================
+
+_FAMILY_TEMPLATES: dict[str, list[dict]] = {
+    "diffusion_unet": [
+        {"kind": "conv_in", "op_type": "conv", "flops_base": 3.0, "mem_base": 2.5},
+        {"kind": "down_block", "op_type": "downsample", "flops_base": 5.0, "mem_base": 4.0},
+        {"kind": "mid_block", "op_type": "attention", "flops_base": 6.0, "mem_base": 5.0},
+        {"kind": "up_block", "op_type": "upsample", "flops_base": 5.0, "mem_base": 4.0},
+        {"kind": "conv_out", "op_type": "conv", "flops_base": 2.0, "mem_base": 2.0},
+    ],
+    "latent_attention": [
+        {"kind": "attention", "op_type": "attn", "flops_base": 6.0, "mem_base": 5.0},
+        {"kind": "ffn", "op_type": "ffn", "flops_base": 5.0, "mem_base": 4.0},
+    ],
+    "adapterization": [
+        {"kind": "base_layer", "op_type": "linear", "flops_base": 4.0, "mem_base": 3.5},
+        {"kind": "lora_down", "op_type": "linear", "flops_base": 1.0, "mem_base": 0.5},
+        {"kind": "lora_up", "op_type": "linear", "flops_base": 1.0, "mem_base": 0.5},
+    ],
+    "runtime_wrapper": [
+        {"kind": "quantize", "op_type": "quant", "flops_base": 2.0, "mem_base": 1.5},
+        {"kind": "kernel", "op_type": "compute", "flops_base": 5.0, "mem_base": 4.0},
+        {"kind": "dequantize", "op_type": "dequant", "flops_base": 2.0, "mem_base": 1.5},
+    ],
+    "video_temporal": [
+        {"kind": "spatial_conv", "op_type": "conv3d", "flops_base": 6.0, "mem_base": 5.5},
+        {"kind": "temporal_attn", "op_type": "attn", "flops_base": 7.0, "mem_base": 6.0},
+        {"kind": "motion_module", "op_type": "conv", "flops_base": 4.0, "mem_base": 3.5},
+    ],
+    "audio_spectral": [
+        {"kind": "stft", "op_type": "fft", "flops_base": 3.0, "mem_base": 2.0},
+        {"kind": "encoder", "op_type": "conv", "flops_base": 5.0, "mem_base": 4.0},
+        {"kind": "decoder", "op_type": "conv", "flops_base": 5.0, "mem_base": 4.0},
+        {"kind": "vocoder", "op_type": "conv", "flops_base": 4.0, "mem_base": 3.5},
+    ],
+    "threed_generative": [
+        {"kind": "point_encoder", "op_type": "mlp", "flops_base": 4.0, "mem_base": 3.0},
+        {"kind": "field_network", "op_type": "mlp", "flops_base": 6.0, "mem_base": 5.0},
+        {"kind": "renderer", "op_type": "raycast", "flops_base": 8.0, "mem_base": 6.0},
+    ],
+    "speech_language": [
+        {"kind": "audio_encoder", "op_type": "conv_attn", "flops_base": 5.0, "mem_base": 4.5},
+        {"kind": "text_decoder", "op_type": "attn", "flops_base": 6.0, "mem_base": 5.0},
+    ],
+    "world_model": [
+        {"kind": "encoder", "op_type": "conv", "flops_base": 4.0, "mem_base": 3.0},
+        {"kind": "rnn_core", "op_type": "lstm", "flops_base": 5.0, "mem_base": 4.5},
+        {"kind": "mixture_head", "op_type": "gmm", "flops_base": 3.0, "mem_base": 2.5},
+    ],
+    "multimodal_alignment": [
+        {"kind": "vision_encoder", "op_type": "vit", "flops_base": 6.0, "mem_base": 5.0},
+        {"kind": "qformer", "op_type": "cross_attn", "flops_base": 5.0, "mem_base": 4.5},
+        {"kind": "language_model", "op_type": "attn", "flops_base": 6.0, "mem_base": 5.0},
+    ],
+    "graph_message_passing": [
+        {"kind": "message", "op_type": "scatter", "flops_base": 3.0, "mem_base": 2.5},
+        {"kind": "aggregate", "op_type": "reduce", "flops_base": 2.0, "mem_base": 2.0},
+        {"kind": "update", "op_type": "mlp", "flops_base": 3.0, "mem_base": 2.5},
+    ],
+    "vision_detection": [
+        {"kind": "backbone", "op_type": "conv", "flops_base": 7.0, "mem_base": 6.0},
+        {"kind": "fpn", "op_type": "conv", "flops_base": 4.0, "mem_base": 3.0},
+        {"kind": "rpn", "op_type": "conv", "flops_base": 3.0, "mem_base": 2.5},
+        {"kind": "roi_head", "op_type": "pool_fc", "flops_base": 4.0, "mem_base": 3.0},
+    ],
+    "bio_sequence": [
+        {"kind": "embedding", "op_type": "embed", "flops_base": 2.0, "mem_base": 2.0},
+        {"kind": "evoformer", "op_type": "attn_pair", "flops_base": 8.0, "mem_base": 7.0},
+        {"kind": "structure_head", "op_type": "mlp", "flops_base": 4.0, "mem_base": 3.0},
+    ],
+    "baseline_residual": [
+        {"kind": "attention", "op_type": "attn", "flops_base": 5.0, "mem_base": 4.0},
+        {"kind": "ffn", "op_type": "ffn", "flops_base": 4.5, "mem_base": 3.5},
+    ],
+    "propagation": [
+        {"kind": "phase", "op_type": "phase", "flops_base": 4.0, "mem_base": 3.5},
+        {"kind": "propagation", "op_type": "prop", "flops_base": 5.0, "mem_base": 4.5},
+        {"kind": "ffn", "op_type": "ffn", "flops_base": 4.5, "mem_base": 3.5},
+    ],
+}
+
+
+def graph_from_family(payload: dict, family: str) -> ArchitectureGraph:
+    """从家族模板生成 ArchitectureGraph。"""
+    template = _FAMILY_TEMPLATES.get(family, _FAMILY_TEMPLATES["baseline_residual"])
+    graph = ArchitectureGraph(system=_base_system(
+        payload.get("name", f"{family}-trace"), family, payload
+    ))
+
+    num_layers = max(int(payload.get("num_layers", 1)), 1)
+    hidden = int(payload.get("hidden_size", 0))
+    intermediate = int(payload.get("intermediate_size", hidden * 4 if hidden else 0))
+    tokens = int(payload.get("batch_size", 1)) * int(payload.get("seq_len", 1))
+
+    for layer in range(num_layers):
+        prefix = f"blk{layer}"
+        prev_slice_id = None
+
+        for tmpl in template:
+            slice_id = f"{prefix}.{tmpl['kind']}"
+            graph.add_slice(SliceState(
+                slice_id=slice_id,
+                kind=tmpl["kind"],
+                op_type=tmpl["op_type"],
+                layer_index=layer,
+                hidden_size=hidden,
+                intermediate_size=intermediate,
+                tokens_in=tokens,
+                tokens_out=tokens,
+                flops=tmpl["flops_base"] + 0.2 * layer,
+                activation_bytes=tmpl["mem_base"] + 0.2 * layer,
+                memory_bytes=tmpl["mem_base"] * 0.8 + 0.15 * layer,
+                weight_bytes=tmpl["mem_base"] * 0.6,
+                kernel_time_ms=tmpl["flops_base"] * 0.5 + 0.1 * layer,
+                stall_ms=0.3 + 0.05 * layer,
+                measured_latency_ms=tmpl["flops_base"] * 0.6 + 0.15 * layer,
+                write_magnitude=1.0 + 0.05 * layer,
+                read_sensitivity=0.95 + 0.05 * layer,
+                doi_alignment=0.95,
+            ))
+            if prev_slice_id:
+                graph.add_edge(SliceEdge(
+                    src=prev_slice_id, dst=slice_id,
+                    weight=0.85, edge_type="sequential", edge_bytes=0.5,
+                ))
+            prev_slice_id = slice_id
+
+        if layer + 1 < num_layers and prev_slice_id:
+            next_first = f"blk{layer + 1}.{template[0]['kind']}"
+            graph.add_edge(SliceEdge(
+                src=prev_slice_id, dst=next_first,
+                weight=0.8, edge_type="residual", edge_bytes=0.5,
+            ))
+
+    return enrich_graph(graph)
+
+
+def graph_from_source_file(source_path: str) -> ArchitectureGraph:
+    """从源码自动推断家族并生成 trace graph。
+
+    source file → space classify → family template → ArchitectureGraph
+    """
+    analysis = analyze_source_file(source_path)
+    family = analysis["space_family_projection"]["dominant_family"]
+
+    density = analysis.get("raw_density", {})
+    total_density = sum(density.values())
+    estimated_layers = max(1, min(12, int(total_density / 3)))
+
+    payload = {
+        "name": Path(source_path).stem,
+        "num_layers": estimated_layers,
+        "hidden_size": 0,
+        "metadata": {
+            "source_file": str(source_path),
+            "classification": analysis["classification"],
+            "family": family,
+        },
+    }
+
+    return graph_from_family(payload, family)
