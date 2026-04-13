@@ -160,6 +160,7 @@ Tensorearch already includes:
 - intervention engine
 - cross-architecture comparison engine
 - agent-friendly JSON CLI
+- source-level modular flow analysis for logic distribution uniformity
 - Windows `exe` packaging
 
 ## Current Metrics
@@ -180,6 +181,11 @@ Current reports can emit:
   - effect entropy
   - intelligence index
 - edge attribution rankings
+- source-diagnose flow metrics:
+  - modular shrinking number
+  - modular uniformity
+  - topological uniformity
+  - modular flow hotspots
 
 ## CLI
 
@@ -204,6 +210,22 @@ dist\tensorearch.exe inspect examples\sample_trace.json --json
 dist\tensorearch.exe space --source-file examples\sample_model.py --json
 dist\tensorearch.exe diagnose --source-file path\to\script.py --json
 ```
+
+For source-level `diagnose`, each module/function/script scope now includes a `modular_flow` profile:
+
+- `assessment`
+  - `uniform_flow`
+  - `mixed_flow`
+  - `concentrated_flow`
+  - `insufficient_signal`
+- `modular_shrinking_number`
+  - higher means logic events collapse into fewer modular / topological regions
+- `modular_uniformity`
+  - how evenly logic events spread under modulo bucketing
+- `topological_uniformity`
+  - how evenly logic events spread across source span bins
+- `hotspots`
+  - modular residues or topological bins with unusually dense activity
 
 Global CLI behavior:
 

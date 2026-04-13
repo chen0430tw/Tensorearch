@@ -207,3 +207,49 @@ def test_cli_diagnose_short_boolean_helper_not_high_entropy(tmp_path):
     clusters = {c["name"]: c for c in payload["entropy_clusters"] if c["scope"] == "function"}
     assert clusters["_is_payload_dict"]["cluster"] != "high_entropy"
     assert clusters["_is_extreme_candidate"]["cluster"] != "high_entropy"
+
+
+def test_cli_diagnose_modular_flow_profile(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "flow_logic.py"
+    src.write_text(
+        "\n".join(
+            [
+                "def front_loaded(x):",
+                "    total = 0",
+                "    total += x",
+                "    total += 1",
+                "    total += 2",
+                "    if total > 0:",
+                "        total += 3",
+                "    return total",
+                "",
+                "def spread_out(x):",
+                "    total = x",
+                "    if x > 0:",
+                "        total += 1",
+                "",
+                "    helper = total * 2",
+                "",
+                "    if helper > 4:",
+                "        helper -= 1",
+                "",
+                "    return helper",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "tensorearch", "diagnose", "--source-file", str(src), "--json"],
+        cwd=root,
+        env=_env_with_src(),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    payload = json.loads(result.stdout)
+    clusters = {c["name"]: c for c in payload["entropy_clusters"] if c["scope"] == "function"}
+    assert "modular_flow" in clusters["front_loaded"]
+    assert "modular_shrinking_number" in clusters["front_loaded"]["modular_flow"]
+    assert clusters["front_loaded"]["modular_flow"]["assessment"] in {"concentrated_flow", "mixed_flow", "uniform_flow"}
+    assert clusters["spread_out"]["modular_flow"]["assessment"] in {"uniform_flow", "mixed_flow"}

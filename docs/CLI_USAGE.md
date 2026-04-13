@@ -250,6 +250,7 @@ The diagnostic report is intended for:
 - fallback reconstruction from downstream outputs
 - shell script overwrite / branch / pipeline visibility
 - entropy-based grouping of logic scopes into low / medium / high entropy clusters
+- modular-flow analysis of whether logic events are evenly distributed or collapse into hotspots
 
 **Arguments:**
 
@@ -279,6 +280,15 @@ The diagnostic report is intended for:
       "entropy": 1.58,
       "dominant_signal": "call",
       "logic_labels": ["scoring_logic", "gating_logic"],
+      "modular_flow": {
+        "modulus": 5,
+        "event_count": 14,
+        "modular_uniformity": 0.88,
+        "topological_uniformity": 0.91,
+        "modular_shrinking_number": 0.10,
+        "assessment": "uniform_flow",
+        "hotspots": ["topo:2"]
+      },
       "counts": {
         "assign": 1,
         "aug_assign": 2,
@@ -306,6 +316,29 @@ The diagnostic report is intended for:
   ]
 }
 ```
+
+**Modular flow fields:**
+
+| Field | Meaning |
+|---|---|
+| `modulus` | modulo bucket count used for the scope |
+| `event_count` | number of logic events observed in the scope |
+| `modular_uniformity` | normalized entropy of logic events across modulo buckets |
+| `topological_uniformity` | normalized entropy of logic events across source-span bins |
+| `modular_shrinking_number` | concentration score derived from both uniformities; higher means stronger collapse into fewer regions |
+| `assessment` | one of `uniform_flow`, `mixed_flow`, `concentrated_flow`, or `insufficient_signal` |
+| `hotspots` | unusually dense modulo residues or topological bins |
+
+**Interpretation guide:**
+
+- `uniform_flow`
+  - logic events are spread relatively evenly across modulo and topological partitions
+- `mixed_flow`
+  - one partitioning view is even while another has visible concentration
+- `concentrated_flow`
+  - logic events collapse into a few residues / bins, suggesting hotspot-like logic packing
+- `insufficient_signal`
+  - scope is too small to support a meaningful modular-flow judgment
 
 ---
 

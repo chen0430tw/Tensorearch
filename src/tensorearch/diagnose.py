@@ -58,6 +58,97 @@ def _entropy_bucket(entropy: float) -> str:
     return "high_entropy"
 
 
+def _normalized_entropy(counts: dict[int, int] | dict[str, int]) -> float:
+    total = sum(v for v in counts.values() if v > 0)
+    active = sum(1 for v in counts.values() if v > 0)
+    if total <= 0 or active <= 1:
+        return 0.0
+    entropy = 0.0
+    for value in counts.values():
+        if value <= 0:
+            continue
+        p = value / total
+        entropy -= p * math.log2(p)
+    return entropy / math.log2(active)
+
+
+def _modular_flow_profile(
+    event_lines: list[int],
+    span_start: int,
+    span_end: int,
+) -> dict[str, object]:
+    if not event_lines:
+        return {
+            "modulus": 0,
+            "event_count": 0,
+            "modular_uniformity": 0.0,
+            "topological_uniformity": 0.0,
+            "modular_shrinking_number": 0.0,
+            "assessment": "insufficient_signal",
+            "hotspots": [],
+        }
+
+    unique_lines = sorted(set(line for line in event_lines if line > 0))
+    event_count = len(unique_lines)
+    if event_count < 4:
+        return {
+            "modulus": 0,
+            "event_count": event_count,
+            "modular_uniformity": 0.0,
+            "topological_uniformity": 0.0,
+            "modular_shrinking_number": 0.0,
+            "assessment": "insufficient_signal",
+            "hotspots": [],
+        }
+    modulus = max(3, min(11, int(round(math.sqrt(event_count + 1)))))
+
+    modular_counts = {idx: 0 for idx in range(modulus)}
+    for line in unique_lines:
+        modular_counts[line % modulus] += 1
+    modular_uniformity = _normalized_entropy(modular_counts)
+
+    span = max(span_end - span_start + 1, 1)
+    n_bins = max(3, min(8, int(round(math.sqrt(event_count))) or 1))
+    topological_counts = {idx: 0 for idx in range(n_bins)}
+    for line in unique_lines:
+        rel = (line - span_start) / span
+        idx = min(n_bins - 1, max(0, int(rel * n_bins)))
+        topological_counts[idx] += 1
+    topological_uniformity = _normalized_entropy(topological_counts)
+
+    modular_shrinking_number = round(
+        max(0.0, min(1.0, 1.0 - 0.5 * (modular_uniformity + topological_uniformity))),
+        4,
+    )
+
+    expected_mod = event_count / max(modulus, 1)
+    expected_top = event_count / max(n_bins, 1)
+    hotspots: list[str] = []
+    for residue, count in modular_counts.items():
+        if count >= max(2, math.ceil(expected_mod * 1.6)):
+            hotspots.append(f"mod:{residue}")
+    for topo_bin, count in topological_counts.items():
+        if count >= max(2, math.ceil(expected_top * 1.6)):
+            hotspots.append(f"topo:{topo_bin}")
+
+    if modular_shrinking_number >= 0.6:
+        assessment = "concentrated_flow"
+    elif modular_uniformity >= 0.8 and topological_uniformity >= 0.8:
+        assessment = "uniform_flow"
+    else:
+        assessment = "mixed_flow"
+
+    return {
+        "modulus": modulus,
+        "event_count": event_count,
+        "modular_uniformity": round(modular_uniformity, 4),
+        "topological_uniformity": round(topological_uniformity, 4),
+        "modular_shrinking_number": modular_shrinking_number,
+        "assessment": assessment,
+        "hotspots": hotspots[:6],
+    }
+
+
 def _python_function_bucket(counts: dict[str, int], entropy: float) -> str:
     if _is_short_boolean_helper(counts):
         return "medium_entropy" if entropy >= 1.0 else "low_entropy"
@@ -140,6 +231,7 @@ class _PythonLogicVisitor(ast.NodeVisitor):
         self._score_mutations: dict[str, list[tuple[str, int]]] = {}
         self._function_entropy_clusters: list[dict[str, object]] = []
         self._module_counts = self._empty_counts()
+        self._module_event_lines: list[int] = []
 
     @staticmethod
     def _empty_counts() -> dict[str, int]:
@@ -156,6 +248,7 @@ class _PythonLogicVisitor(ast.NodeVisitor):
 
     def visit_Assign(self, node: ast.Assign) -> None:
         self._module_counts["assign"] += 1
+        self._module_event_lines.append(node.lineno)
         if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
             target = node.targets[0].id
             if target == "attention_map":
@@ -176,6 +269,7 @@ class _PythonLogicVisitor(ast.NodeVisitor):
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         self._module_counts["aug_assign"] += 1
+        self._module_event_lines.append(node.lineno)
         if isinstance(node.target, ast.Name):
             target = node.target.id
             op = type(node.op).__name__
@@ -184,30 +278,37 @@ class _PythonLogicVisitor(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         self._module_counts["call"] += 1
+        self._module_event_lines.append(node.lineno)
         self.generic_visit(node)
 
     def visit_If(self, node: ast.If) -> None:
         self._module_counts["if"] += 1
+        self._module_event_lines.append(node.lineno)
         self.generic_visit(node)
 
     def visit_For(self, node: ast.For) -> None:
         self._module_counts["loop"] += 1
+        self._module_event_lines.append(node.lineno)
         self.generic_visit(node)
 
     def visit_While(self, node: ast.While) -> None:
         self._module_counts["loop"] += 1
+        self._module_event_lines.append(node.lineno)
         self.generic_visit(node)
 
     def visit_Return(self, node: ast.Return) -> None:
         self._module_counts["return"] += 1
+        self._module_event_lines.append(node.lineno)
         self.generic_visit(node)
 
     def visit_Compare(self, node: ast.Compare) -> None:
         self._module_counts["compare"] += 1
+        self._module_event_lines.append(node.lineno)
         self.generic_visit(node)
 
     def visit_BoolOp(self, node: ast.BoolOp) -> None:
         self._module_counts["boolop"] += 1
+        self._module_event_lines.append(node.lineno)
         self.generic_visit(node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
@@ -286,6 +387,7 @@ class _PythonLogicVisitor(ast.NodeVisitor):
 
     def entropy_clusters(self) -> list[dict[str, object]]:
         module_entropy = _shannon_entropy(self._module_counts)
+        n_lines = max(len(self.text.splitlines()), 1)
         return [
             {
                 "scope": "module",
@@ -295,6 +397,7 @@ class _PythonLogicVisitor(ast.NodeVisitor):
                 "dominant_signal": _dominant_signal(self._module_counts),
                 "logic_labels": _logic_labels("<module>", self.text, self._module_counts, "python"),
                 "counts": dict(self._module_counts),
+                "modular_flow": _modular_flow_profile(self._module_event_lines, 1, n_lines),
             },
             *self._function_entropy_clusters,
         ]
@@ -357,24 +460,34 @@ class _PythonLogicVisitor(ast.NodeVisitor):
     def _build_function_cluster(self, node: ast.FunctionDef) -> dict[str, object]:
         counts = self._empty_counts()
         text = ast.get_source_segment(self.text, node) or ""
+        event_lines: list[int] = []
         for child in ast.walk(node):
             if isinstance(child, ast.Assign):
                 counts["assign"] += 1
+                event_lines.append(child.lineno)
             elif isinstance(child, ast.AugAssign):
                 counts["aug_assign"] += 1
+                event_lines.append(child.lineno)
             elif isinstance(child, ast.Call):
                 counts["call"] += 1
+                event_lines.append(child.lineno)
             elif isinstance(child, ast.If):
                 counts["if"] += 1
+                event_lines.append(child.lineno)
             elif isinstance(child, (ast.For, ast.While)):
                 counts["loop"] += 1
+                event_lines.append(child.lineno)
             elif isinstance(child, ast.Return):
                 counts["return"] += 1
+                event_lines.append(child.lineno)
             elif isinstance(child, ast.Compare):
                 counts["compare"] += 1
+                event_lines.append(child.lineno)
             elif isinstance(child, ast.BoolOp):
                 counts["boolop"] += 1
+                event_lines.append(child.lineno)
         entropy = _shannon_entropy(counts)
+        span_end = getattr(node, "end_lineno", node.lineno)
         return {
             "scope": "function",
             "name": node.name,
@@ -384,6 +497,7 @@ class _PythonLogicVisitor(ast.NodeVisitor):
             "logic_labels": _logic_labels(node.name, text, counts, "python"),
             "counts": counts,
             "line": node.lineno,
+            "modular_flow": _modular_flow_profile(event_lines, node.lineno, span_end),
         }
 
     @staticmethod
@@ -423,6 +537,7 @@ def _diagnose_shell(path: str | Path, text: str) -> dict[str, object]:
     findings: list[DiagnosticItem] = []
     strengths: list[DiagnosticItem] = []
     lines = text.splitlines()
+    event_lines: list[int] = []
 
     assignment_lines: dict[str, list[int]] = {}
     assign_re = re.compile(r"^\s*(?:\$)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
@@ -439,6 +554,7 @@ def _diagnose_shell(path: str | Path, text: str) -> dict[str, object]:
     for idx, line in enumerate(lines, start=1):
         if line.strip():
             counts["command"] += 1
+            event_lines.append(idx)
         m = assign_re.search(line)
         if m:
             assignment_lines.setdefault(m.group(1), []).append(idx)
@@ -512,6 +628,7 @@ def _diagnose_shell(path: str | Path, text: str) -> dict[str, object]:
                 "logic_labels": _logic_labels("<script>", text, counts, "shell"),
                 "counts": counts,
                 "line": 0,
+                "modular_flow": _modular_flow_profile(event_lines, 1, max(len(lines), 1)),
             }
         ],
     }
@@ -578,10 +695,44 @@ def diagnose_report(payload: dict[str, object]) -> str:
         for cluster in clusters:
             where = f" line={cluster['line']}" if cluster.get("line") else ""
             labels = ",".join(cluster.get("logic_labels", []))
+            flow = cluster.get("modular_flow", {})
+            flow_text = (
+                f" flow={flow.get('assessment','unknown')}"
+                f" msn={flow.get('modular_shrinking_number', 0.0):.4f}"
+                f" mod_u={flow.get('modular_uniformity', 0.0):.4f}"
+                f" topo_u={flow.get('topological_uniformity', 0.0):.4f}"
+            )
             lines.append(
                 f"- {cluster['scope']} name={cluster['name']}{where} "
                 f"cluster={cluster['cluster']} entropy={cluster['entropy']:.4f} "
-                f"dominant_signal={cluster['dominant_signal']} labels={labels}"
+                f"dominant_signal={cluster['dominant_signal']} labels={labels}{flow_text}"
+            )
+    else:
+        lines.append("- none")
+
+    lines.append("")
+    lines.append("modular_flow")
+    flowful_clusters = [
+        cluster for cluster in clusters
+        if isinstance(cluster.get("modular_flow"), dict)
+    ]
+    if flowful_clusters:
+        ranked = sorted(
+            flowful_clusters,
+            key=lambda cluster: cluster["modular_flow"].get("modular_shrinking_number", 0.0),
+            reverse=True,
+        )
+        for cluster in ranked[:8]:
+            flow = cluster["modular_flow"]
+            hotspots = ",".join(flow.get("hotspots", [])) or "none"
+            where = f" line={cluster['line']}" if cluster.get("line") else ""
+            lines.append(
+                f"- {cluster['scope']} name={cluster['name']}{where} "
+                f"assessment={flow.get('assessment', 'unknown')} "
+                f"msn={flow.get('modular_shrinking_number', 0.0):.4f} "
+                f"mod_u={flow.get('modular_uniformity', 0.0):.4f} "
+                f"topo_u={flow.get('topological_uniformity', 0.0):.4f} "
+                f"events={flow.get('event_count', 0)} hotspots={hotspots}"
             )
     else:
         lines.append("- none")
