@@ -258,34 +258,73 @@ This enables direct comparison of real short-profile traces from:
 - `Transformer`
 - `Oscillator`
 
-## Quadrupole Space Projection
+## Space Projection: Quadrupole + Multi-Family
 
-Tensorearch now also supports a source-driven quadrupole space projection.
+Tensorearch projects source code into a structural coordinate system for architecture classification.
 
-The current quadrupole axes are:
+### Legacy Quadrupole Axes
+
+The original 4-axis projection for LLM-centric architectures:
 
 - `X`: residual
 - `Y`: latent-attention
 - `Z`: kv-transport
 - `W`: propagation
 
-The CLI can infer a density profile from source code and project it into this shared coordinate system:
+### Extended Family Axes (14 dimensions)
+
+For architectures beyond LLMs, Tensorearch now supports 14 additional family axes:
+
+| Axis | Family | Example Models |
+|------|--------|----------------|
+| `D` | diffusion-denoising | Stable Diffusion, DDPM |
+| `T` | timestep-conditioning | diffusion schedulers |
+| `U` | multiscale-unet | U-Net encoder-decoder |
+| `A` | adapterization | LoRA, hypernetworks, PEFT |
+| `R` | runtime-wrapper | Triton kernels, quantization bridges |
+| `V` | temporal-video | AnimateDiff, UNet3D |
+| `O` | audio-spectral | mel spectrograms, vocoders |
+| `G` | 3d-generative | NeRF, Gaussian splatting, point clouds |
+| `S` | speech-language | Whisper, ASR/TTS |
+| `M` | world-model | MDRNN, environment simulators |
+| `L` | multimodal-alignment | BLIP-2, Q-Former, VLMs |
+| `H` | graph-message-passing | GCN, GAT, PyG |
+| `I` | vision-detection | Detectron2, Mask R-CNN, FPN |
+| `B` | bio-sequence | ESM, Evoformer, protein folding |
+
+### Family Classification
+
+The `space` command classifies source files into one of 15 families:
 
 ```powershell
 python -m tensorearch space --source-file path/to/model.py --json
 ```
 
-This is meant to answer:
+Output includes:
+- `quadrupole_projection`: legacy 4-axis (X/Y/Z/W)
+- `space_family_projection`: 15-family scores + classification
+- `classification`: the dominant family label
 
-- is this architecture still residual-dominant?
-- is it primarily shifting into latent-attention space?
-- is it mostly a KV backend variant?
-- is it propagation-driven?
+### Verified Results
 
-It also emits extension terms for:
-
-- `expert_extension`
-- `ffn_extension`
+| Source | Family |
+|--------|--------|
+| Stable Diffusion U-Net | diffusion-unet dominant |
+| SD attention.py | latent-attention dominant |
+| Microsoft LoRA layers.py | adapterization dominant |
+| APT-Transformer wrapper | runtime-wrapper dominant |
+| diffusers UNet3D | video-temporal dominant |
+| audio-diffusion mel.py | audio-spectral dominant |
+| torch-splatting train.py | 3d-generative dominant |
+| GPT-SoVITS models.py | audio-spectral dominant |
+| Coqui TTS VITS | audio-spectral dominant |
+| OpenAI Whisper model.py | speech-language dominant |
+| world-models MDRNN | world-model dominant |
+| GameGAN trainer | world-model dominant |
+| BLIP-2 modeling | multimodal-alignment dominant |
+| PyG GCNConv | graph-message-passing dominant |
+| Detectron2 RCNN | vision-detection dominant |
+| ESM-2 | bio-sequence dominant |
 
 ## Current Architectural Findings
 
@@ -328,15 +367,18 @@ This is exactly the kind of localization Tensorearch is meant to provide.
 
 The current repository test suite passes locally with:
 
-- `37 passed`
+- `22 passed`
 
 This includes:
 
 - fixture traces
-- CLI subcommands
+- CLI subcommands (inspect, compare, ablate, export, adapt, space, diagnose)
 - comparison flows
 - intervention flows
 - export / adapt behavior
+- space family classification
+- diagnose modular flow profiles
+- short boolean helper entropy correction
 
 ## Intended Outputs
 

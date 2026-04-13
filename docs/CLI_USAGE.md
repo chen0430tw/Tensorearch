@@ -233,6 +233,82 @@ See `examples/transformer_adapter_input.json` and `examples/oscillator_adapter_i
 
 ---
 
+### space
+
+Analyze a source file and project it into the multi-family architecture space.
+
+```bash
+python -m tensorearch space --source-file path/to/model.py
+python -m tensorearch space --source-file path/to/model.py --json
+```
+
+**Arguments:**
+
+| Argument | Required | Description |
+|---|---|---|
+| `--source-file` | yes | path to a Python source file |
+| `--json` | no | emit JSON output |
+| `--output` | no | write output to file |
+
+**Output includes:**
+
+- `quadrupole_projection`: legacy 4-axis (X_residual, Y_latent_attention, Z_kv_transport, W_propagation)
+- `space_family_projection`: 15-family classification with per-family scores
+- `classification`: the dominant family label
+- `normalized_density`: raw keyword density vector (20 dimensions)
+
+**Supported families (15):**
+
+| Family | Description |
+|---|---|
+| baseline residual | standard residual networks |
+| latent-attention dominant | transformer attention + KV |
+| diffusion-unet dominant | denoising diffusion + U-Net |
+| adapterization dominant | LoRA, PEFT, hypernetworks |
+| runtime-wrapper dominant | Triton kernels, quantization |
+| video-temporal dominant | video generation (AnimateDiff, UNet3D) |
+| audio-spectral dominant | audio/music generation, mel spectrograms |
+| 3d-generative dominant | NeRF, Gaussian splatting, point clouds |
+| speech-language dominant | ASR/TTS (Whisper, GPT-SoVITS) |
+| world-model dominant | environment simulators (MDRNN, GameGAN) |
+| multimodal-alignment dominant | VLMs (BLIP-2, Q-Former) |
+| graph-message-passing dominant | GNNs (GCN, GAT, PyG) |
+| vision-detection dominant | object detection (Detectron2, RCNN) |
+| bio-sequence dominant | protein/bio models (ESM, Evoformer) |
+| propagation dominant | oscillatory/phase-based propagation |
+
+**JSON output example:**
+
+```json
+{
+  "classification": "diffusion-unet dominant",
+  "quadrupole_projection": {
+    "axes": {
+      "X_residual": 0.12,
+      "Y_latent_attention": 0.08,
+      "Z_kv_transport": 0.03,
+      "W_propagation": 0.01
+    }
+  },
+  "space_family_projection": {
+    "dominant_family": "diffusion_unet",
+    "classification": "diffusion-unet dominant",
+    "space_family_scores": {
+      "diffusion_unet": 0.85,
+      "latent_attention": 0.12,
+      "baseline_residual": 0.03
+    },
+    "extended_axes": {
+      "D_diffusion_denoising": 0.25,
+      "T_timestep_conditioning": 0.18,
+      "U_multiscale_unet": 0.22
+    }
+  }
+}
+```
+
+---
+
 ### diagnose
 
 Diagnose source-level logic smells in Python or shell scripts.
