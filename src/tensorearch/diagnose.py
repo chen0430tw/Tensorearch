@@ -58,6 +58,27 @@ def _entropy_bucket(entropy: float) -> str:
     return "high_entropy"
 
 
+def _python_function_bucket(counts: dict[str, int], entropy: float) -> str:
+    if _is_short_boolean_helper(counts):
+        return "medium_entropy" if entropy >= 1.0 else "low_entropy"
+    return _entropy_bucket(entropy)
+
+
+def _is_short_boolean_helper(counts: dict[str, int]) -> bool:
+    control_nodes = counts.get("if", 0) + counts.get("loop", 0)
+    comparison_nodes = counts.get("compare", 0) + counts.get("boolop", 0)
+    dataflow_nodes = counts.get("assign", 0) + counts.get("aug_assign", 0) + counts.get("call", 0)
+    returns = counts.get("return", 0)
+    return (
+        control_nodes <= 1
+        and returns >= 1
+        and comparison_nodes >= 1
+        and dataflow_nodes <= 4
+        and counts.get("loop", 0) == 0
+        and counts.get("aug_assign", 0) == 0
+    )
+
+
 def _dominant_signal(counts: dict[str, int]) -> str:
     if not counts:
         return "none"
@@ -357,7 +378,7 @@ class _PythonLogicVisitor(ast.NodeVisitor):
         return {
             "scope": "function",
             "name": node.name,
-            "cluster": _entropy_bucket(entropy),
+            "cluster": _python_function_bucket(counts, entropy),
             "entropy": round(entropy, 4),
             "dominant_signal": _dominant_signal(counts),
             "logic_labels": _logic_labels(node.name, text, counts, "python"),

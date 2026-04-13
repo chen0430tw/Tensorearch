@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -175,3 +176,34 @@ def test_cli_diagnose_shell(tmp_path):
     assert '"logic_labels"' in result.stdout
     assert '"pipeline_logic"' in result.stdout
     assert '"repeated_overwrite"' in result.stdout
+
+
+def test_cli_diagnose_short_boolean_helper_not_high_entropy(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "helpers.py"
+    src.write_text(
+        "\n".join(
+            [
+                "def _is_payload_dict(candidate):",
+                "    if not isinstance(candidate, dict):",
+                "        return False",
+                "    return 'gamma_pcm' in candidate",
+                "",
+                "def _is_extreme_candidate(cand_features):",
+                "    return cand_features.get('aggressiveness', 0.5) > 0.9 or cand_features.get('conservatism', 0.5) > 0.9",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "tensorearch", "diagnose", "--source-file", str(src), "--json"],
+        cwd=root,
+        env=_env_with_src(),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    payload = json.loads(result.stdout)
+    clusters = {c["name"]: c for c in payload["entropy_clusters"] if c["scope"] == "function"}
+    assert clusters["_is_payload_dict"]["cluster"] != "high_entropy"
+    assert clusters["_is_extreme_candidate"]["cluster"] != "high_entropy"
