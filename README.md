@@ -189,26 +189,41 @@ Current reports can emit:
 
 ## CLI
 
-Source mode:
+8 commands:
+
+| Command | Description |
+|---------|-------------|
+| `inspect` | Analyze a trace, report bottlenecks and compliance metrics |
+| `compare` | Compare two architectures side by side |
+| `ablate` | Simulate an intervention (remove slice, scale edge, etc.) and show delta |
+| `adapt` | Convert source code or architecture description into a trace (16 families) |
+| `space` | Classify source code into one of 15 model families (18-dim projection) |
+| `diagnose` | Audit source-level logic: entropy clusters, modular flow, mutation tracking |
+| `export` | Write inspect or compare results to a file |
+| `help` | Show complete usage guide with all commands, families, and examples |
 
 ```powershell
-python -m tensorearch --help
+# Quick reference
+python -m tensorearch help
 python -m tensorearch inspect <trace.json> --json
 python -m tensorearch compare <left.json> <right.json> --json
 python -m tensorearch ablate <trace.json> --kind <kind> --target <target> --json
-python -m tensorearch export --mode inspect --left <trace.json> --output out.json --json
-python -m tensorearch adapt --adapter transformer --input adapter_input.json --output out.json
+python -m tensorearch adapt --adapter source --input model.py --output trace.json
+python -m tensorearch adapt --adapter transformer --input desc.json --output trace.json
+python -m tensorearch adapt --adapter family --family diffusion_unet --input desc.json --output trace.json
 python -m tensorearch space --source-file path/to/model.py --json
 python -m tensorearch diagnose --source-file path/to/script.py --json
+python -m tensorearch export --mode inspect --left <trace.json> --output out.json --json
 ```
 
 Packaged Windows CLI:
 
 ```powershell
-dist\tensorearch.exe --help
+dist\tensorearch.exe help
 dist\tensorearch.exe inspect examples\sample_trace.json --json
-dist\tensorearch.exe space --source-file examples\sample_model.py --json
-dist\tensorearch.exe diagnose --source-file path\to\script.py --json
+dist\tensorearch.exe space --source-file model.py --json
+dist\tensorearch.exe diagnose --source-file script.py --json
+dist\tensorearch.exe adapt --adapter source --input model.py --output trace.json
 ```
 
 For source-level `diagnose`, each module/function/script scope now includes a `modular_flow` profile:
@@ -367,7 +382,7 @@ This is exactly the kind of localization Tensorearch is meant to provide.
 
 The current repository test suite passes locally with:
 
-- `22 passed`
+- `22 passed` (as of 2026-04-14)
 
 This includes:
 
