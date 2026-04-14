@@ -747,9 +747,10 @@ def _diagnose_go(path: str | Path, text: str) -> dict[str, object]:
     atomic_re = re.compile(r"atomic\.\w+")
     panic_re = re.compile(r"\bpanic\(")
 
-    # Track variable overwrites
+    # Track variable overwrites (exclude append/make which are accumulation)
     var_assignments: dict[str, list[int]] = {}
     var_assign_re = re.compile(r"^\s*(\w+)\s*(?::?=)\s*")
+    go_accum_re = re.compile(r"=\s*(?:append|make|len|cap|new)\s*\(")
 
     # Current function tracking
     cur_func_name = ""
@@ -792,7 +793,7 @@ def _diagnose_go(path: str | Path, text: str) -> dict[str, object]:
             if in_func:
                 cur_func_events.append(idx)
             vm = var_assign_re.match(stripped)
-            if vm:
+            if vm and not go_accum_re.search(stripped):
                 var_assignments.setdefault(vm.group(1), []).append(idx)
 
         if call_re.search(stripped):
