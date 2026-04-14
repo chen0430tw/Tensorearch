@@ -37,6 +37,85 @@ def _load_text(path: str | Path) -> str:
     return raw.decode("utf-8", errors="ignore")
 
 
+# ---------------------------------------------------------------------------
+# Line pre-processing: strip comments and string literals before regex
+# ---------------------------------------------------------------------------
+
+# Comment prefix patterns per language family
+_COMMENT_STYLES: dict[str, list[str]] = {
+    "c_family":  ["//"],           # Go, Rust, JS, TS, Java, C#, C++, C, Zig, PHP
+    "hash":      ["#"],            # Python, Shell, Ruby, YAML, Dockerfile, PHP
+    "sql":       ["--"],           # SQL
+    "basic":     ["'", "REM "],    # VB/VBA/VBScript
+    "lua":       ["--"],           # Lua
+    "epl":       [],               # EPL has no standard line comments
+}
+
+# Map file suffix → comment style key
+_SUFFIX_TO_COMMENT: dict[str, str] = {
+    ".py": "hash", ".sh": "hash", ".bash": "hash", ".zsh": "hash",
+    ".rb": "hash", ".yaml": "hash", ".yml": "hash",
+    ".go": "c_family", ".rs": "c_family", ".js": "c_family",
+    ".jsx": "c_family", ".mjs": "c_family", ".ts": "c_family",
+    ".tsx": "c_family", ".java": "c_family", ".cs": "c_family",
+    ".cpp": "c_family", ".cc": "c_family", ".cxx": "c_family",
+    ".hpp": "c_family", ".c": "c_family", ".h": "c_family",
+    ".zig": "c_family",
+    ".php": "c_family",  # PHP also supports # but // is more common
+    ".sql": "sql",
+    ".lua": "lua",
+    ".bas": "basic", ".vb": "basic", ".vbs": "basic", ".frm": "basic",
+    ".e": "epl", ".ec": "epl",
+    ".ps1": "hash", ".cmd": "hash", ".bat": "hash",
+    ".pseudo": "c_family", ".ppc": "c_family",
+}
+
+# Regex to strip quoted strings: matches "..." or '...' (non-greedy, handles escaped quotes)
+_DOUBLE_QUOTE_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
+_SINGLE_QUOTE_RE = re.compile(r"'(?:[^'\\]|\\.)*'")
+# Backtick strings (JS/TS template literals, Go raw strings)
+_BACKTICK_RE = re.compile(r'`(?:[^`\\]|\\.)*`')
+
+
+def _strip_line(line: str, suffix: str) -> str:
+    """Remove string literals and comments from a line for cleaner regex matching.
+
+    Returns the 'logic skeleton' of the line — only code structure remains.
+    This is applied before regex counting to avoid false positives from
+    keywords inside strings or comments.
+
+    Example:
+        input:  '# if this is important'  (suffix=".py")
+        output: ''  (entire line is a comment)
+
+        input:  'x = "if (true)"'  (suffix=".py")
+        output: 'x = ""'  (string content stripped)
+
+        input:  'if x > 0:  // check boundary'  (suffix=".go")
+        output: 'if x > 0:'  (comment stripped)
+    """
+    # Step 1: Strip string literals (replace content with empty string, keep quotes)
+    stripped = _DOUBLE_QUOTE_RE.sub('""', line)
+    stripped = _SINGLE_QUOTE_RE.sub("''", stripped)
+    if suffix in {".js", ".jsx", ".mjs", ".ts", ".tsx", ".go"}:
+        stripped = _BACKTICK_RE.sub('``', stripped)
+
+    # Step 2: Strip line comments
+    style_key = _SUFFIX_TO_COMMENT.get(suffix, "")
+    if style_key:
+        prefixes = _COMMENT_STYLES.get(style_key, [])
+        for prefix in prefixes:
+            # Find comment start (not inside remaining quotes)
+            idx = stripped.find(prefix)
+            if idx >= 0:
+                # For Basic, REM must be at line start or after whitespace
+                if prefix == "REM " and idx > 0 and not stripped[:idx].strip() == "":
+                    continue
+                stripped = stripped[:idx]
+
+    return stripped
+
+
 def _shannon_entropy(counts: dict[str, int]) -> float:
     total = sum(v for v in counts.values() if v > 0)
     if total <= 0:
@@ -537,6 +616,7 @@ def _diagnose_shell(path: str | Path, text: str) -> dict[str, object]:
     findings: list[DiagnosticItem] = []
     strengths: list[DiagnosticItem] = []
     lines = text.splitlines()
+    _suffix = Path(path).suffix.lower()
     event_lines: list[int] = []
 
     assignment_lines: dict[str, list[int]] = {}
@@ -639,6 +719,7 @@ def _diagnose_go(path: str | Path, text: str) -> dict[str, object]:
     findings: list[DiagnosticItem] = []
     strengths: list[DiagnosticItem] = []
     lines = text.splitlines()
+    _suffix = Path(path).suffix.lower()
     event_lines: list[int] = []
 
     # Per-function tracking
@@ -678,7 +759,7 @@ def _diagnose_go(path: str | Path, text: str) -> dict[str, object]:
     in_func = False
 
     for idx, line in enumerate(lines, start=1):
-        stripped = line.strip()
+        stripped = _strip_line(line.strip(), _suffix)
         if not stripped or stripped.startswith("//"):
             continue
 
@@ -866,6 +947,7 @@ def _diagnose_c_pseudo(path: str | Path, text: str) -> dict[str, object]:
     findings: list[DiagnosticItem] = []
     strengths: list[DiagnosticItem] = []
     lines = text.splitlines()
+    _suffix = Path(path).suffix.lower()
     event_lines: list[int] = []
 
     counts: dict[str, int] = {
@@ -888,7 +970,7 @@ def _diagnose_c_pseudo(path: str | Path, text: str) -> dict[str, object]:
     bitmask_count = 0
 
     for idx, line in enumerate(lines, start=1):
-        stripped = line.strip()
+        stripped = _strip_line(line.strip(), _suffix)
         if not stripped or stripped.startswith("//"):
             # Check for function header in comments
             if "Function at" in stripped:
@@ -1089,6 +1171,7 @@ def _diagnose_rust(path: str | Path, text: str) -> dict[str, object]:
     findings: list[DiagnosticItem] = []
     strengths: list[DiagnosticItem] = []
     lines = text.splitlines()
+    _suffix = Path(path).suffix.lower()
     event_lines: list[int] = []
 
     func_clusters: list[dict[str, object]] = []
@@ -1126,7 +1209,7 @@ def _diagnose_rust(path: str | Path, text: str) -> dict[str, object]:
     in_func = False
 
     for idx, line in enumerate(lines, start=1):
-        stripped = line.strip()
+        stripped = _strip_line(line.strip(), _suffix)
         if not stripped or stripped.startswith("//"):
             continue
 
@@ -1336,6 +1419,7 @@ def _diagnose_javascript(path: str | Path, text: str) -> dict[str, object]:
     findings: list[DiagnosticItem] = []
     strengths: list[DiagnosticItem] = []
     lines = text.splitlines()
+    _suffix = Path(path).suffix.lower()
     event_lines: list[int] = []
 
     func_clusters: list[dict[str, object]] = []
@@ -1385,7 +1469,7 @@ def _diagnose_javascript(path: str | Path, text: str) -> dict[str, object]:
     is_test_file = bool(re.search(r"\.(?:test|spec)\.", str(path)))
 
     for idx, line in enumerate(lines, start=1):
-        stripped = line.strip()
+        stripped = _strip_line(line.strip(), _suffix)
         if not stripped or stripped.startswith("//"):
             continue
 
@@ -1610,6 +1694,7 @@ def _diagnose_typescript(path: str | Path, text: str) -> dict[str, object]:
     findings: list[DiagnosticItem] = []
     strengths: list[DiagnosticItem] = []
     lines = text.splitlines()
+    _suffix = Path(path).suffix.lower()
     event_lines: list[int] = []
 
     func_clusters: list[dict[str, object]] = []
@@ -1668,7 +1753,7 @@ def _diagnose_typescript(path: str | Path, text: str) -> dict[str, object]:
     is_test_file = bool(re.search(r"\.(?:test|spec)\.", str(path)))
 
     for idx, line in enumerate(lines, start=1):
-        stripped = line.strip()
+        stripped = _strip_line(line.strip(), _suffix)
         if not stripped or stripped.startswith("//"):
             # Still check for ts-ignore in comments
             if ts_ignore_re.search(stripped):
@@ -1953,6 +2038,7 @@ def _diagnose_java(path: str | Path, text: str) -> dict[str, object]:
     findings: list[DiagnosticItem] = []
     strengths: list[DiagnosticItem] = []
     lines = text.splitlines()
+    _suffix = Path(path).suffix.lower()
     event_lines: list[int] = []
 
     func_clusters: list[dict[str, object]] = []
@@ -2004,7 +2090,7 @@ def _diagnose_java(path: str | Path, text: str) -> dict[str, object]:
     catch_lines: list[int] = []
 
     for idx, line in enumerate(lines, start=1):
-        stripped = line.strip()
+        stripped = _strip_line(line.strip(), _suffix)
         if not stripped or stripped.startswith("//") or stripped.startswith("*") or stripped.startswith("/*"):
             continue
 
@@ -2239,6 +2325,7 @@ def _diagnose_zig(path: str | Path, text: str) -> dict[str, object]:
     findings: list[DiagnosticItem] = []
     strengths: list[DiagnosticItem] = []
     lines = text.splitlines()
+    _suffix = Path(path).suffix.lower()
     event_lines: list[int] = []
 
     func_clusters: list[dict[str, object]] = []
@@ -2269,7 +2356,7 @@ def _diagnose_zig(path: str | Path, text: str) -> dict[str, object]:
     brace_depth = 0
 
     for idx, line in enumerate(lines, start=1):
-        stripped = line.strip()
+        stripped = _strip_line(line.strip(), _suffix)
         if not stripped or stripped.startswith("//"):
             continue
 
@@ -2428,6 +2515,7 @@ def _diagnose_cpp(path: str | Path, text: str) -> dict[str, object]:
     findings: list[DiagnosticItem] = []
     strengths: list[DiagnosticItem] = []
     lines = text.splitlines()
+    _suffix = Path(path).suffix.lower()
     event_lines: list[int] = []
 
     func_clusters: list[dict[str, object]] = []
@@ -2474,7 +2562,7 @@ def _diagnose_cpp(path: str | Path, text: str) -> dict[str, object]:
     has_destructor = False
 
     for idx, line in enumerate(lines, start=1):
-        stripped = line.strip()
+        stripped = _strip_line(line.strip(), _suffix)
         if not stripped or stripped.startswith("//") or stripped.startswith("/*") or stripped.startswith("*"):
             continue
 
@@ -2658,6 +2746,7 @@ def _diagnose_yaml(path: str | Path, text: str) -> dict[str, object]:
     findings: list[DiagnosticItem] = []
     strengths: list[DiagnosticItem] = []
     lines = text.splitlines()
+    _suffix = Path(path).suffix.lower()
     event_lines: list[int] = []
 
     counts: dict[str, int] = {
@@ -2697,7 +2786,7 @@ def _diagnose_yaml(path: str | Path, text: str) -> dict[str, object]:
             event_lines.append(idx)
 
         # Scalar: a line that is a mapping value (after :) or sequence item
-        stripped = line.strip()
+        stripped = _strip_line(line.strip(), _suffix)
         if ":" in stripped and not stripped.endswith(":") and not stripped.startswith("#"):
             counts["scalar"] += 1
 
@@ -2782,6 +2871,7 @@ def _diagnose_sql(path: str | Path, text: str) -> dict[str, object]:
     findings: list[DiagnosticItem] = []
     strengths: list[DiagnosticItem] = []
     lines = text.splitlines()
+    _suffix = Path(path).suffix.lower()
     event_lines: list[int] = []
 
     counts: dict[str, int] = {
@@ -2808,7 +2898,7 @@ def _diagnose_sql(path: str | Path, text: str) -> dict[str, object]:
     max_subquery_depth = 0
 
     for idx, line in enumerate(lines, start=1):
-        stripped = line.strip()
+        stripped = _strip_line(line.strip(), _suffix)
         if not stripped or stripped.startswith("--"):
             continue
 
@@ -2935,6 +3025,7 @@ def _diagnose_dockerfile(path: str | Path, text: str) -> dict[str, object]:
     findings: list[DiagnosticItem] = []
     strengths: list[DiagnosticItem] = []
     lines = text.splitlines()
+    _suffix = Path(path).suffix.lower()
     event_lines: list[int] = []
 
     counts: dict[str, int] = {
@@ -2957,7 +3048,7 @@ def _diagnose_dockerfile(path: str | Path, text: str) -> dict[str, object]:
     curl_bash_re = re.compile(r"curl\s+.*\|\s*(?:ba)?sh", re.IGNORECASE)
 
     for idx, line in enumerate(lines, start=1):
-        stripped = line.strip()
+        stripped = _strip_line(line.strip(), _suffix)
         if not stripped or stripped.startswith("#"):
             continue
 
@@ -3093,6 +3184,7 @@ def _diagnose_ruby(path: str | Path, text: str) -> dict[str, object]:
     findings: list[DiagnosticItem] = []
     strengths: list[DiagnosticItem] = []
     lines = text.splitlines()
+    _suffix = Path(path).suffix.lower()
     event_lines: list[int] = []
 
     func_clusters: list[dict[str, object]] = []
@@ -3131,7 +3223,7 @@ def _diagnose_ruby(path: str | Path, text: str) -> dict[str, object]:
     has_explicit_rescue = False  # rescue with specific type (not Exception)
 
     for idx, line in enumerate(lines, start=1):
-        stripped = line.strip()
+        stripped = _strip_line(line.strip(), _suffix)
         if not stripped or stripped.startswith("#"):
             if frozen_re.search(stripped):
                 has_frozen = True
@@ -3304,6 +3396,7 @@ def _diagnose_lua(path: str | Path, text: str) -> dict[str, object]:
     findings: list[DiagnosticItem] = []
     strengths: list[DiagnosticItem] = []
     lines = text.splitlines()
+    _suffix = Path(path).suffix.lower()
     event_lines: list[int] = []
 
     func_clusters: list[dict[str, object]] = []
@@ -3340,7 +3433,7 @@ def _diagnose_lua(path: str | Path, text: str) -> dict[str, object]:
     has_local_scoping = False
 
     for idx, line in enumerate(lines, start=1):
-        stripped = line.strip()
+        stripped = _strip_line(line.strip(), _suffix)
         if not stripped or stripped.startswith("--"):
             continue
 
@@ -3506,6 +3599,7 @@ def _diagnose_csharp(path: str | Path, text: str) -> dict[str, object]:
     findings: list[DiagnosticItem] = []
     strengths: list[DiagnosticItem] = []
     lines = text.splitlines()
+    _suffix = Path(path).suffix.lower()
     event_lines: list[int] = []
 
     func_clusters: list[dict[str, object]] = []
@@ -3558,7 +3652,7 @@ def _diagnose_csharp(path: str | Path, text: str) -> dict[str, object]:
     is_test_file = bool(re.search(r"[Tt]est|[Ss]pec", str(path)))
 
     for idx, line in enumerate(lines, start=1):
-        stripped = line.strip()
+        stripped = _strip_line(line.strip(), _suffix)
         if not stripped or stripped.startswith("//"):
             continue
 
@@ -3766,6 +3860,7 @@ def _diagnose_php(path: str | Path, text: str) -> dict[str, object]:
     findings: list[DiagnosticItem] = []
     strengths: list[DiagnosticItem] = []
     lines = text.splitlines()
+    _suffix = Path(path).suffix.lower()
     event_lines: list[int] = []
 
     func_clusters: list[dict[str, object]] = []
@@ -3818,7 +3913,7 @@ def _diagnose_php(path: str | Path, text: str) -> dict[str, object]:
     has_pdo = False
 
     for idx, line in enumerate(lines, start=1):
-        stripped = line.strip()
+        stripped = _strip_line(line.strip(), _suffix)
         if not stripped or stripped.startswith("//") or stripped.startswith("#"):
             continue
 
@@ -4025,6 +4120,7 @@ def _diagnose_basic(path: str | Path, text: str) -> dict[str, object]:
     findings: list[DiagnosticItem] = []
     strengths: list[DiagnosticItem] = []
     lines = text.splitlines()
+    _suffix = Path(path).suffix.lower()
     event_lines: list[int] = []
 
     func_clusters: list[dict[str, object]] = []
@@ -4074,7 +4170,7 @@ def _diagnose_basic(path: str | Path, text: str) -> dict[str, object]:
     has_select_case = False
 
     for idx, line in enumerate(lines, start=1):
-        stripped = line.strip()
+        stripped = _strip_line(line.strip(), _suffix)
         if not stripped or stripped.startswith("'") or stripped.upper().startswith("REM "):
             continue
 
@@ -4280,6 +4376,7 @@ def _diagnose_epl(path: str | Path, text: str) -> dict[str, object]:
     findings: list[DiagnosticItem] = []
     strengths: list[DiagnosticItem] = []
     lines = text.splitlines()
+    _suffix = Path(path).suffix.lower()
     event_lines: list[int] = []
 
     func_clusters: list[dict[str, object]] = []
@@ -4328,7 +4425,7 @@ def _diagnose_epl(path: str | Path, text: str) -> dict[str, object]:
     dll_import_lines: list[int] = []
 
     for idx, line in enumerate(lines, start=1):
-        stripped = line.strip()
+        stripped = _strip_line(line.strip(), _suffix)
         if not stripped or stripped.startswith("'"):
             continue
 
