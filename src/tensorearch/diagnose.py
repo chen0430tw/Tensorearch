@@ -3494,6 +3494,1012 @@ def _diagnose_lua(path: str | Path, text: str) -> dict[str, object]:
     }
 
 
+def _build_csharp_cluster(
+    name: str, start: int, end: int,
+    counts: dict[str, int], event_lines: list[int], full_text: str,
+) -> dict[str, object]:
+    return _build_func_cluster(name, start, end, counts, event_lines, full_text, "csharp")
+
+
+def _diagnose_csharp(path: str | Path, text: str) -> dict[str, object]:
+    """Diagnose C# source via regex pattern matching."""
+    findings: list[DiagnosticItem] = []
+    strengths: list[DiagnosticItem] = []
+    lines = text.splitlines()
+    event_lines: list[int] = []
+
+    func_clusters: list[dict[str, object]] = []
+    module_counts: dict[str, int] = {
+        "assign": 0, "call": 0, "if": 0, "loop": 0,
+        "return": 0, "switch": 0, "try_catch": 0, "throw": 0,
+        "using_stmt": 0, "async_await": 0, "linq": 0,
+        "property": 0, "event": 0,
+    }
+
+    # Regex patterns for C#
+    func_re = re.compile(
+        r"^\s*(?:public|private|protected|internal|static|virtual|override|abstract|async|sealed|partial|\s)*"
+        r"\s+\w[\w<>\[\],\s\?]*\s+(\w+)\s*\("
+    )
+    assign_re = re.compile(r"\w+\s*(?:=(?!=)|\+=|-=|\*=|/=|%=|\?\?=)")
+    call_re = re.compile(r"\w+\s*[.(]\w")
+    if_re = re.compile(r"^\s*(?:if|else\s+if)\s*\(")
+    loop_re = re.compile(r"^\s*(?:for|foreach|while|do)\s*[\({]")
+    return_re = re.compile(r"^\s*return\b")
+    switch_re = re.compile(r"^\s*switch\s*\(")
+    try_re = re.compile(r"^\s*try\s*\{?")
+    catch_re = re.compile(r"^\s*catch\b")
+    throw_re = re.compile(r"^\s*throw\b")
+    using_re = re.compile(r"^\s*using\s*\(")
+    async_re = re.compile(r"\basync\b|\bawait\b")
+    linq_re = re.compile(r"\.\s*(?:Select|Where|OrderBy|GroupBy|Any|All|First|Last|Count|Sum|Average|Aggregate|Join|Distinct|Skip|Take)\s*\(")
+    property_re = re.compile(r"^\s*(?:public|private|protected|internal)\s+\w[\w<>\[\],\s\?]*\s+\w+\s*\{\s*(?:get|set)")
+    event_re = re.compile(r"^\s*(?:public|private|protected|internal)?\s*event\s+")
+
+    # Finding patterns
+    empty_catch_re = re.compile(r"catch\s*(?:\([^)]*\))?\s*\{\s*\}")
+    thread_sleep_re = re.compile(r"\bThread\.Sleep\b")
+    dynamic_re = re.compile(r"\bdynamic\b")
+    gc_collect_re = re.compile(r"\bGC\.Collect\s*\(")
+
+    # Strength patterns
+    nullable_re = re.compile(r"\w+\?\s+\w+")  # nullable annotations
+
+    cur_func_name = ""
+    cur_func_start = 0
+    cur_func_counts: dict[str, int] = {}
+    cur_func_events: list[int] = []
+    in_func = False
+
+    has_using = False
+    has_async = False
+    has_linq = False
+    has_nullable = False
+    is_test_file = bool(re.search(r"[Tt]est|[Ss]pec", str(path)))
+
+    for idx, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("//"):
+            continue
+
+        # Detect function boundaries
+        fm = func_re.match(stripped)
+        if fm:
+            if in_func and cur_func_name:
+                func_clusters.append(_build_csharp_cluster(
+                    cur_func_name, cur_func_start, idx - 1,
+                    cur_func_counts, cur_func_events, text,
+                ))
+            cur_func_name = fm.group(1)
+            cur_func_start = idx
+            cur_func_counts = {k: 0 for k in module_counts}
+            cur_func_events = []
+            in_func = True
+            continue
+
+        # Count patterns
+        if assign_re.search(stripped):
+            module_counts["assign"] += 1
+            if in_func:
+                cur_func_counts["assign"] = cur_func_counts.get("assign", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if call_re.search(stripped):
+            module_counts["call"] += 1
+            if in_func:
+                cur_func_counts["call"] = cur_func_counts.get("call", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if if_re.match(stripped):
+            module_counts["if"] += 1
+            if in_func:
+                cur_func_counts["if"] = cur_func_counts.get("if", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if loop_re.match(stripped):
+            module_counts["loop"] += 1
+            if in_func:
+                cur_func_counts["loop"] = cur_func_counts.get("loop", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if return_re.match(stripped):
+            module_counts["return"] += 1
+            if in_func:
+                cur_func_counts["return"] = cur_func_counts.get("return", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if switch_re.match(stripped):
+            module_counts["switch"] += 1
+            if in_func:
+                cur_func_counts["switch"] = cur_func_counts.get("switch", 0) + 1
+
+        if try_re.match(stripped):
+            module_counts["try_catch"] += 1
+            if in_func:
+                cur_func_counts["try_catch"] = cur_func_counts.get("try_catch", 0) + 1
+
+        if throw_re.match(stripped):
+            module_counts["throw"] += 1
+            if in_func:
+                cur_func_counts["throw"] = cur_func_counts.get("throw", 0) + 1
+
+        if using_re.match(stripped):
+            module_counts["using_stmt"] += 1
+            has_using = True
+            if in_func:
+                cur_func_counts["using_stmt"] = cur_func_counts.get("using_stmt", 0) + 1
+
+        if async_re.search(stripped):
+            module_counts["async_await"] += 1
+            has_async = True
+            if in_func:
+                cur_func_counts["async_await"] = cur_func_counts.get("async_await", 0) + 1
+
+        if linq_re.search(stripped):
+            module_counts["linq"] += 1
+            has_linq = True
+            if in_func:
+                cur_func_counts["linq"] = cur_func_counts.get("linq", 0) + 1
+
+        if property_re.match(stripped):
+            module_counts["property"] += 1
+            if in_func:
+                cur_func_counts["property"] = cur_func_counts.get("property", 0) + 1
+
+        if event_re.match(stripped):
+            module_counts["event"] += 1
+            if in_func:
+                cur_func_counts["event"] = cur_func_counts.get("event", 0) + 1
+
+        if nullable_re.search(stripped):
+            has_nullable = True
+
+        # Findings
+        if empty_catch_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="empty_catch",
+                message="Empty catch block swallows exception — at minimum log the error.",
+                line=idx, symbol="catch",
+            ))
+
+        if thread_sleep_re.search(stripped) and not is_test_file:
+            findings.append(DiagnosticItem(
+                severity="warning", kind="thread_sleep",
+                message="Thread.Sleep in non-test code — consider async Task.Delay or timer.",
+                line=idx, symbol="Thread.Sleep",
+            ))
+
+        if dynamic_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="info", kind="dynamic_keyword",
+                message="'dynamic' keyword bypasses compile-time type checking.",
+                line=idx, symbol="dynamic",
+            ))
+
+        if gc_collect_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="gc_collect",
+                message="GC.Collect() — premature optimization; CLR manages garbage collection.",
+                line=idx, symbol="GC.Collect",
+            ))
+
+    # Close last function
+    if in_func and cur_func_name:
+        func_clusters.append(_build_csharp_cluster(
+            cur_func_name, cur_func_start, len(lines),
+            cur_func_counts, cur_func_events, text,
+        ))
+
+    # Strengths
+    if has_using:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="using_statements",
+            message=f"{module_counts['using_stmt']} using statement(s) — proper IDisposable resource management.",
+            line=0, symbol="using",
+        ))
+    if has_async:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="async_await",
+            message=f"{module_counts['async_await']} async/await usage(s) — non-blocking asynchronous code.",
+            line=0, symbol="async",
+        ))
+    if has_linq:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="linq_queries",
+            message=f"{module_counts['linq']} LINQ query operation(s) — declarative data manipulation.",
+            line=0, symbol="linq",
+        ))
+    if has_nullable:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="nullable_annotations",
+            message="Nullable type annotations found — explicit null safety.",
+            line=0, symbol="nullable",
+        ))
+
+    entropy = _shannon_entropy(module_counts)
+    n_lines = max(len(lines), 1)
+
+    return {
+        "language": "csharp",
+        "source_file": str(path),
+        "findings": [item.to_dict() for item in findings],
+        "strengths": [item.to_dict() for item in strengths],
+        "entropy_clusters": [
+            {
+                "scope": "module",
+                "name": "<module>",
+                "cluster": _entropy_bucket(entropy),
+                "entropy": round(entropy, 4),
+                "dominant_signal": _dominant_signal(module_counts),
+                "logic_labels": _logic_labels("<module>", text, module_counts, "csharp"),
+                "counts": dict(module_counts),
+                "modular_flow": _modular_flow_profile(event_lines, 1, n_lines),
+            },
+            *func_clusters,
+        ],
+    }
+
+
+# ===================================================================
+# 2. PHP analyzer
+# ===================================================================
+
+def _build_php_cluster(
+    name: str, start: int, end: int,
+    counts: dict[str, int], event_lines: list[int], full_text: str,
+) -> dict[str, object]:
+    return _build_func_cluster(name, start, end, counts, event_lines, full_text, "php")
+
+
+def _diagnose_php(path: str | Path, text: str) -> dict[str, object]:
+    """Diagnose PHP source via regex pattern matching."""
+    findings: list[DiagnosticItem] = []
+    strengths: list[DiagnosticItem] = []
+    lines = text.splitlines()
+    event_lines: list[int] = []
+
+    func_clusters: list[dict[str, object]] = []
+    module_counts: dict[str, int] = {
+        "assign": 0, "call": 0, "if": 0, "loop": 0,
+        "return": 0, "switch": 0, "try_catch": 0,
+        "class_def": 0, "trait": 0, "namespace": 0, "use_stmt": 0,
+    }
+
+    # Regex patterns for PHP
+    func_re = re.compile(
+        r"^\s*(?:public|private|protected|static|\s)*function\s+(\w+)\s*\("
+    )
+    assign_re = re.compile(r"\$\w+\s*(?:=(?!=)|\+=|-=|\.=|\*=|/=|%=|\?\?=)")
+    call_re = re.compile(r"\w+\s*\(")
+    if_re = re.compile(r"^\s*(?:if|elseif|else\s+if)\s*\(")
+    loop_re = re.compile(r"^\s*(?:for|foreach|while|do)\s*[\({]")
+    return_re = re.compile(r"^\s*return\b")
+    switch_re = re.compile(r"^\s*switch\s*\(")
+    try_re = re.compile(r"^\s*try\s*\{?")
+    catch_re = re.compile(r"^\s*catch\s*\(")
+    class_re = re.compile(r"^\s*(?:abstract\s+|final\s+)?class\s+(\w+)")
+    trait_re = re.compile(r"^\s*trait\s+(\w+)")
+    namespace_re = re.compile(r"^\s*namespace\s+[\w\\]+")
+    use_re = re.compile(r"^\s*use\s+[\w\\]+")
+
+    # Finding patterns
+    eval_re = re.compile(r"\beval\s*\(")
+    exec_re = re.compile(r"\b(?:exec|system|passthru|shell_exec|popen|proc_open)\s*\(")
+    extract_re = re.compile(r"\bextract\s*\(")
+    mysql_re = re.compile(r"\bmysql_\w+\s*\(")
+    varvar_re = re.compile(r"\$\$\w+")
+
+    # Strength patterns
+    type_decl_re = re.compile(
+        r"(?:public|private|protected|static)?\s*function\s+\w+\s*\([^)]*(?:int|string|float|bool|array|object|callable|iterable)\s+\$"
+    )
+    return_type_re = re.compile(r"\)\s*:\s*(?:int|string|float|bool|array|object|void|self|static|mixed|never)\b")
+    pdo_re = re.compile(r"\bPDO\b|\bnew\s+PDO\b|\$\w+->prepare\s*\(")
+
+    cur_func_name = ""
+    cur_func_start = 0
+    cur_func_counts: dict[str, int] = {}
+    cur_func_events: list[int] = []
+    in_func = False
+
+    has_namespace = False
+    has_try_catch = False
+    has_type_decl = False
+    has_pdo = False
+
+    for idx, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("//") or stripped.startswith("#"):
+            continue
+
+        # Detect function boundaries
+        fm = func_re.match(stripped)
+        if fm:
+            if in_func and cur_func_name:
+                func_clusters.append(_build_php_cluster(
+                    cur_func_name, cur_func_start, idx - 1,
+                    cur_func_counts, cur_func_events, text,
+                ))
+            cur_func_name = fm.group(1)
+            cur_func_start = idx
+            cur_func_counts = {k: 0 for k in module_counts}
+            cur_func_events = []
+            in_func = True
+            continue
+
+        # Count patterns
+        if assign_re.search(stripped):
+            module_counts["assign"] += 1
+            if in_func:
+                cur_func_counts["assign"] = cur_func_counts.get("assign", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if call_re.search(stripped):
+            module_counts["call"] += 1
+            if in_func:
+                cur_func_counts["call"] = cur_func_counts.get("call", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if if_re.match(stripped):
+            module_counts["if"] += 1
+            if in_func:
+                cur_func_counts["if"] = cur_func_counts.get("if", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if loop_re.match(stripped):
+            module_counts["loop"] += 1
+            if in_func:
+                cur_func_counts["loop"] = cur_func_counts.get("loop", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if return_re.match(stripped):
+            module_counts["return"] += 1
+            if in_func:
+                cur_func_counts["return"] = cur_func_counts.get("return", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if switch_re.match(stripped):
+            module_counts["switch"] += 1
+            if in_func:
+                cur_func_counts["switch"] = cur_func_counts.get("switch", 0) + 1
+
+        if try_re.match(stripped):
+            module_counts["try_catch"] += 1
+            has_try_catch = True
+            if in_func:
+                cur_func_counts["try_catch"] = cur_func_counts.get("try_catch", 0) + 1
+
+        if class_re.match(stripped):
+            module_counts["class_def"] += 1
+
+        if trait_re.match(stripped):
+            module_counts["trait"] += 1
+
+        if namespace_re.match(stripped):
+            module_counts["namespace"] += 1
+            has_namespace = True
+
+        if use_re.match(stripped):
+            module_counts["use_stmt"] += 1
+
+        if type_decl_re.search(stripped) or return_type_re.search(stripped):
+            has_type_decl = True
+
+        if pdo_re.search(stripped):
+            has_pdo = True
+
+        # Findings
+        if eval_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="eval_usage",
+                message="eval() found — executes arbitrary PHP code, serious security risk.",
+                line=idx, symbol="eval",
+            ))
+
+        if exec_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="command_injection",
+                message="Shell execution function found — validate input to prevent command injection.",
+                line=idx, symbol="exec",
+            ))
+
+        if extract_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="extract_usage",
+                message="extract() imports variables into scope — risk of variable injection.",
+                line=idx, symbol="extract",
+            ))
+
+        if mysql_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="deprecated_mysql",
+                message="mysql_* functions are deprecated — use PDO or mysqli instead.",
+                line=idx, symbol="mysql_",
+            ))
+
+        if varvar_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="info", kind="variable_variables",
+                message="Variable variable ($$var) found — can obscure data flow.",
+                line=idx, symbol="$$",
+            ))
+
+    # Check for missing namespace
+    if not has_namespace and module_counts["class_def"] > 0:
+        findings.append(DiagnosticItem(
+            severity="info", kind="no_namespace",
+            message="Class defined without namespace declaration — risk of naming conflicts.",
+            line=0, symbol="namespace",
+        ))
+
+    # Close last function
+    if in_func and cur_func_name:
+        func_clusters.append(_build_php_cluster(
+            cur_func_name, cur_func_start, len(lines),
+            cur_func_counts, cur_func_events, text,
+        ))
+
+    # Strengths
+    if has_type_decl:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="type_declarations",
+            message="Type declarations found — improved code reliability and IDE support.",
+            line=0, symbol="type_decl",
+        ))
+    if has_namespace:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="namespace_usage",
+            message="Namespace declarations used — proper code organization.",
+            line=0, symbol="namespace",
+        ))
+    if has_try_catch:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="try_catch_handling",
+            message=f"{module_counts['try_catch']} try/catch block(s) — structured error handling.",
+            line=0, symbol="try_catch",
+        ))
+    if has_pdo:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="pdo_usage",
+            message="PDO usage detected — safe parameterized database access.",
+            line=0, symbol="PDO",
+        ))
+
+    entropy = _shannon_entropy(module_counts)
+    n_lines = max(len(lines), 1)
+
+    return {
+        "language": "php",
+        "source_file": str(path),
+        "findings": [item.to_dict() for item in findings],
+        "strengths": [item.to_dict() for item in strengths],
+        "entropy_clusters": [
+            {
+                "scope": "module",
+                "name": "<module>",
+                "cluster": _entropy_bucket(entropy),
+                "entropy": round(entropy, 4),
+                "dominant_signal": _dominant_signal(module_counts),
+                "logic_labels": _logic_labels("<module>", text, module_counts, "php"),
+                "counts": dict(module_counts),
+                "modular_flow": _modular_flow_profile(event_lines, 1, n_lines),
+            },
+            *func_clusters,
+        ],
+    }
+
+
+# ===================================================================
+# 3. BASIC analyzer (VB/VBA/VBScript/FreeBasic)
+# ===================================================================
+
+def _build_basic_cluster(
+    name: str, start: int, end: int,
+    counts: dict[str, int], event_lines: list[int], full_text: str,
+) -> dict[str, object]:
+    return _build_func_cluster(name, start, end, counts, event_lines, full_text, "basic")
+
+
+def _diagnose_basic(path: str | Path, text: str) -> dict[str, object]:
+    """Diagnose VB/VBA/VBScript/FreeBasic source via regex pattern matching."""
+    findings: list[DiagnosticItem] = []
+    strengths: list[DiagnosticItem] = []
+    lines = text.splitlines()
+    event_lines: list[int] = []
+
+    func_clusters: list[dict[str, object]] = []
+    module_counts: dict[str, int] = {
+        "assign": 0, "call": 0, "if": 0, "loop": 0,
+        "return": 0, "select_case": 0, "dim": 0, "redim": 0,
+        "on_error": 0, "goto": 0, "class_def": 0,
+    }
+
+    # Regex patterns for BASIC (case-insensitive)
+    func_re = re.compile(
+        r"^\s*(?:Public\s+|Private\s+|Friend\s+|Static\s+)*(?:Sub|Function)\s+(\w+)\s*\(",
+        re.IGNORECASE,
+    )
+    end_func_re = re.compile(r"^\s*End\s+(?:Sub|Function)\b", re.IGNORECASE)
+    assign_re = re.compile(r"^\s*(?:Set\s+|Let\s+)?\w+(?:\.\w+)*\s*=(?!=)", re.IGNORECASE)
+    call_re = re.compile(r"\b(?:Call\s+)?\w+(?:\.\w+)*\s*\(", re.IGNORECASE)
+    if_re = re.compile(r"^\s*(?:If|ElseIf)\s+", re.IGNORECASE)
+    loop_re = re.compile(r"^\s*(?:For\s|Do\s|While\s|Loop\s|Wend\b|Next\b)", re.IGNORECASE)
+    return_re = re.compile(r"^\s*(?:Exit\s+(?:Sub|Function))\b", re.IGNORECASE)
+    select_re = re.compile(r"^\s*Select\s+Case\b", re.IGNORECASE)
+    dim_re = re.compile(r"^\s*Dim\s+", re.IGNORECASE)
+    redim_re = re.compile(r"^\s*ReDim\s+", re.IGNORECASE)
+    on_error_re = re.compile(r"^\s*On\s+Error\s+", re.IGNORECASE)
+    goto_re = re.compile(r"\bGoTo\s+\w+", re.IGNORECASE)
+    class_re = re.compile(r"^\s*Class\s+(\w+)", re.IGNORECASE)
+
+    # Finding patterns
+    on_error_resume_re = re.compile(r"^\s*On\s+Error\s+Resume\s+Next\b", re.IGNORECASE)
+    on_error_goto_handler_re = re.compile(r"^\s*On\s+Error\s+GoTo\s+\w+", re.IGNORECASE)
+    redim_no_preserve_re = re.compile(r"^\s*ReDim\s+(?!Preserve\b)\w+", re.IGNORECASE)
+    createobject_fso_re = re.compile(
+        r'CreateObject\s*\(\s*"Scripting\.FileSystemObject"\s*\)', re.IGNORECASE,
+    )
+
+    # Strength patterns
+    option_explicit_re = re.compile(r"^\s*Option\s+Explicit\b", re.IGNORECASE)
+
+    cur_func_name = ""
+    cur_func_start = 0
+    cur_func_counts: dict[str, int] = {}
+    cur_func_events: list[int] = []
+    in_func = False
+
+    has_option_explicit = False
+    has_error_handler = False
+    has_select_case = False
+
+    for idx, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("'") or stripped.upper().startswith("REM "):
+            continue
+
+        if option_explicit_re.match(stripped):
+            has_option_explicit = True
+            continue
+
+        # Detect function boundaries
+        fm = func_re.match(stripped)
+        if fm:
+            if in_func and cur_func_name:
+                func_clusters.append(_build_basic_cluster(
+                    cur_func_name, cur_func_start, idx - 1,
+                    cur_func_counts, cur_func_events, text,
+                ))
+            cur_func_name = fm.group(1)
+            cur_func_start = idx
+            cur_func_counts = {k: 0 for k in module_counts}
+            cur_func_events = []
+            in_func = True
+            continue
+
+        if end_func_re.match(stripped):
+            if in_func and cur_func_name:
+                func_clusters.append(_build_basic_cluster(
+                    cur_func_name, cur_func_start, idx,
+                    cur_func_counts, cur_func_events, text,
+                ))
+                cur_func_name = ""
+                in_func = False
+            continue
+
+        # Count patterns
+        if assign_re.match(stripped):
+            module_counts["assign"] += 1
+            if in_func:
+                cur_func_counts["assign"] = cur_func_counts.get("assign", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if call_re.search(stripped):
+            module_counts["call"] += 1
+            if in_func:
+                cur_func_counts["call"] = cur_func_counts.get("call", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if if_re.match(stripped):
+            module_counts["if"] += 1
+            if in_func:
+                cur_func_counts["if"] = cur_func_counts.get("if", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if loop_re.match(stripped):
+            module_counts["loop"] += 1
+            if in_func:
+                cur_func_counts["loop"] = cur_func_counts.get("loop", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if return_re.match(stripped):
+            module_counts["return"] += 1
+            if in_func:
+                cur_func_counts["return"] = cur_func_counts.get("return", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if select_re.match(stripped):
+            module_counts["select_case"] += 1
+            has_select_case = True
+            if in_func:
+                cur_func_counts["select_case"] = cur_func_counts.get("select_case", 0) + 1
+
+        if dim_re.match(stripped):
+            module_counts["dim"] += 1
+            if in_func:
+                cur_func_counts["dim"] = cur_func_counts.get("dim", 0) + 1
+
+        if redim_re.match(stripped):
+            module_counts["redim"] += 1
+            if in_func:
+                cur_func_counts["redim"] = cur_func_counts.get("redim", 0) + 1
+
+        if on_error_re.match(stripped):
+            module_counts["on_error"] += 1
+            if in_func:
+                cur_func_counts["on_error"] = cur_func_counts.get("on_error", 0) + 1
+
+        if goto_re.search(stripped) and not on_error_re.match(stripped):
+            module_counts["goto"] += 1
+            if in_func:
+                cur_func_counts["goto"] = cur_func_counts.get("goto", 0) + 1
+
+        if class_re.match(stripped):
+            module_counts["class_def"] += 1
+
+        # Findings
+        if on_error_resume_re.match(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="on_error_resume_next",
+                message="'On Error Resume Next' swallows all errors — use structured error handling.",
+                line=idx, symbol="On Error Resume Next",
+            ))
+
+        if on_error_goto_handler_re.match(stripped) and not on_error_resume_re.match(stripped):
+            has_error_handler = True
+
+        if goto_re.search(stripped) and not on_error_re.match(stripped):
+            findings.append(DiagnosticItem(
+                severity="info", kind="goto_usage",
+                message="GoTo found — consider structured control flow (loops, Select Case).",
+                line=idx, symbol="GoTo",
+            ))
+
+        if redim_no_preserve_re.match(stripped):
+            findings.append(DiagnosticItem(
+                severity="info", kind="redim_no_preserve",
+                message="ReDim without Preserve — existing array data will be lost.",
+                line=idx, symbol="ReDim",
+            ))
+
+        if createobject_fso_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="info", kind="fso_createobject",
+                message="CreateObject(\"Scripting.FileSystemObject\") — validate file paths before operations.",
+                line=idx, symbol="FileSystemObject",
+            ))
+
+    # Close last function (if no explicit End Sub/Function)
+    if in_func and cur_func_name:
+        func_clusters.append(_build_basic_cluster(
+            cur_func_name, cur_func_start, len(lines),
+            cur_func_counts, cur_func_events, text,
+        ))
+
+    # Strengths
+    if has_option_explicit:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="option_explicit",
+            message="Option Explicit — forces variable declaration, prevents typo bugs.",
+            line=0, symbol="Option Explicit",
+        ))
+    if has_error_handler:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="structured_error_handling",
+            message="On Error GoTo handler — structured error handling with labeled handlers.",
+            line=0, symbol="On Error GoTo",
+        ))
+    if has_select_case:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="select_case_usage",
+            message=f"{module_counts['select_case']} Select Case block(s) — structured branching.",
+            line=0, symbol="Select Case",
+        ))
+
+    entropy = _shannon_entropy(module_counts)
+    n_lines = max(len(lines), 1)
+
+    return {
+        "language": "basic",
+        "source_file": str(path),
+        "findings": [item.to_dict() for item in findings],
+        "strengths": [item.to_dict() for item in strengths],
+        "entropy_clusters": [
+            {
+                "scope": "module",
+                "name": "<module>",
+                "cluster": _entropy_bucket(entropy),
+                "entropy": round(entropy, 4),
+                "dominant_signal": _dominant_signal(module_counts),
+                "logic_labels": _logic_labels("<module>", text, module_counts, "basic"),
+                "counts": dict(module_counts),
+                "modular_flow": _modular_flow_profile(event_lines, 1, n_lines),
+            },
+            *func_clusters,
+        ],
+    }
+
+
+# ===================================================================
+# 4. EPL (易语言) analyzer
+# ===================================================================
+
+def _build_epl_cluster(
+    name: str, start: int, end: int,
+    counts: dict[str, int], event_lines: list[int], full_text: str,
+) -> dict[str, object]:
+    return _build_func_cluster(name, start, end, counts, event_lines, full_text, "epl")
+
+
+def _diagnose_epl(path: str | Path, text: str) -> dict[str, object]:
+    """Diagnose EPL (易语言/Easy Programming Language) source via regex pattern matching.
+
+    EPL source files use Chinese keywords. This analyzer matches those keywords
+    to extract control flow and data flow patterns.
+    """
+    findings: list[DiagnosticItem] = []
+    strengths: list[DiagnosticItem] = []
+    lines = text.splitlines()
+    event_lines: list[int] = []
+
+    func_clusters: list[dict[str, object]] = []
+    module_counts: dict[str, int] = {
+        "assign": 0, "call": 0, "if": 0, "loop": 0,
+        "return": 0, "select": 0, "variable_def": 0,
+        "event_handler": 0, "dll_import": 0, "api_call": 0,
+    }
+
+    # Regex patterns for EPL (Chinese keywords)
+    # .子程序 marks function/subroutine definition
+    func_re = re.compile(r"^\s*\.子程序\s+(\S+)")
+    # .局部变量 / .全局变量 / .参数
+    local_var_re = re.compile(r"^\s*\.局部变量\s+")
+    global_var_re = re.compile(r"^\s*\.全局变量\s+")
+    param_re = re.compile(r"^\s*\.参数\s+")
+    # Control flow
+    if_re = re.compile(r"^\s*(?:如果|如果真)\s*[\(（]")
+    loop_re = re.compile(r"^\s*(?:循环|计次循环|判断循环首|变量循环首)\s*[\(（]?")
+    return_re = re.compile(r"^\s*返回\s*[\(（]?")
+    select_re = re.compile(r"^\s*判断\s*[\(（]?")
+    # Assignment: variable = value
+    assign_re = re.compile(r"^\s*\S+\s*[＝=]\s*")
+    # Function/method calls: name( or name（
+    call_re = re.compile(r"\S+\s*[\(（]")
+    # Event handler: _事件名
+    event_handler_re = re.compile(r"^\s*\.子程序\s+\S+_\S+(?:事件|被单击|被选择|被改变|按下)")
+    # DLL import
+    dll_import_re = re.compile(r"^\s*\.DLL命令\s+|^\s*DLL命令\s+")
+    # API / shell calls
+    api_call_re = re.compile(r"取反|取绝对值|取整|取余数|位与|位或|位异或|位取反")
+    ui_call_re = re.compile(r"信息框|输入框|文件对话框|颜色对话框")
+    # Finding patterns
+    shell_exec_re = re.compile(r"执行\s*[\(（]|运行\s*[\(（]")
+    # Version marker
+    version_re = re.compile(r"^\s*\.版本\s+")
+
+    cur_func_name = ""
+    cur_func_start = 0
+    cur_func_counts: dict[str, int] = {}
+    cur_func_events: list[int] = []
+    in_func = False
+
+    has_local_vars = False
+    has_structured_subs = False
+    dll_import_lines: list[int] = []
+
+    for idx, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("'"):
+            continue
+
+        # Detect function boundaries (.子程序)
+        fm = func_re.match(stripped)
+        if fm:
+            if in_func and cur_func_name:
+                func_clusters.append(_build_epl_cluster(
+                    cur_func_name, cur_func_start, idx - 1,
+                    cur_func_counts, cur_func_events, text,
+                ))
+            cur_func_name = fm.group(1)
+            cur_func_start = idx
+            cur_func_counts = {k: 0 for k in module_counts}
+            cur_func_events = []
+            in_func = True
+            has_structured_subs = True
+
+            # Check for event handler pattern
+            if event_handler_re.match(stripped):
+                module_counts["event_handler"] += 1
+                if in_func:
+                    cur_func_counts["event_handler"] = cur_func_counts.get("event_handler", 0) + 1
+            continue
+
+        # Variable declarations
+        if local_var_re.match(stripped) or param_re.match(stripped):
+            module_counts["variable_def"] += 1
+            has_local_vars = True
+            if in_func:
+                cur_func_counts["variable_def"] = cur_func_counts.get("variable_def", 0) + 1
+            continue
+
+        if global_var_re.match(stripped):
+            module_counts["variable_def"] += 1
+            if in_func:
+                cur_func_counts["variable_def"] = cur_func_counts.get("variable_def", 0) + 1
+            continue
+
+        # DLL command
+        if dll_import_re.match(stripped):
+            module_counts["dll_import"] += 1
+            dll_import_lines.append(idx)
+            if in_func:
+                cur_func_counts["dll_import"] = cur_func_counts.get("dll_import", 0) + 1
+            continue
+
+        # Skip version markers
+        if version_re.match(stripped):
+            continue
+
+        # Count patterns
+        if assign_re.match(stripped) and not func_re.match(stripped):
+            module_counts["assign"] += 1
+            if in_func:
+                cur_func_counts["assign"] = cur_func_counts.get("assign", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if call_re.search(stripped):
+            module_counts["call"] += 1
+            if in_func:
+                cur_func_counts["call"] = cur_func_counts.get("call", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if if_re.match(stripped):
+            module_counts["if"] += 1
+            if in_func:
+                cur_func_counts["if"] = cur_func_counts.get("if", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if loop_re.match(stripped):
+            module_counts["loop"] += 1
+            if in_func:
+                cur_func_counts["loop"] = cur_func_counts.get("loop", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if return_re.match(stripped):
+            module_counts["return"] += 1
+            if in_func:
+                cur_func_counts["return"] = cur_func_counts.get("return", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if select_re.match(stripped):
+            module_counts["select"] += 1
+            if in_func:
+                cur_func_counts["select"] = cur_func_counts.get("select", 0) + 1
+
+        if api_call_re.search(stripped) or ui_call_re.search(stripped):
+            module_counts["api_call"] += 1
+            if in_func:
+                cur_func_counts["api_call"] = cur_func_counts.get("api_call", 0) + 1
+
+        # Findings
+        if shell_exec_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="shell_execution",
+                message="执行()/运行() found — shell execution, validate input to prevent injection.",
+                line=idx, symbol="执行/运行",
+            ))
+
+    # DLL import without error handling check
+    if dll_import_lines:
+        # Check if there's any error handling near DLL imports
+        has_error_near_dll = False
+        for dll_line in dll_import_lines:
+            nearby_text = "\n".join(lines[max(0, dll_line - 1):min(len(lines), dll_line + 5)])
+            if re.search(r"如果|判断|错误", nearby_text):
+                has_error_near_dll = True
+                break
+        if not has_error_near_dll and len(dll_import_lines) > 0:
+            findings.append(DiagnosticItem(
+                severity="info", kind="dll_no_error_handling",
+                message=f"{len(dll_import_lines)} DLL命令 without nearby error handling.",
+                line=dll_import_lines[0], symbol="DLL命令",
+            ))
+
+    # Close last function
+    if in_func and cur_func_name:
+        func_clusters.append(_build_epl_cluster(
+            cur_func_name, cur_func_start, len(lines),
+            cur_func_counts, cur_func_events, text,
+        ))
+
+    # Strengths
+    if has_structured_subs:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="structured_subroutines",
+            message="Structured .子程序 definitions — modular code organization.",
+            line=0, symbol=".子程序",
+        ))
+    if has_local_vars:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="explicit_local_variables",
+            message=".局部变量 declarations — explicit variable scoping.",
+            line=0, symbol=".局部变量",
+        ))
+
+    entropy = _shannon_entropy(module_counts)
+    n_lines = max(len(lines), 1)
+
+    return {
+        "language": "epl",
+        "source_file": str(path),
+        "findings": [item.to_dict() for item in findings],
+        "strengths": [item.to_dict() for item in strengths],
+        "entropy_clusters": [
+            {
+                "scope": "module",
+                "name": "<module>",
+                "cluster": _entropy_bucket(entropy),
+                "entropy": round(entropy, 4),
+                "dominant_signal": _dominant_signal(module_counts),
+                "logic_labels": _logic_labels("<module>", text, module_counts, "epl"),
+                "counts": dict(module_counts),
+                "modular_flow": _modular_flow_profile(event_lines, 1, n_lines),
+            },
+            *func_clusters,
+        ],
+    }
+
+
 def analyze_logic_file(path: str | Path) -> dict[str, object]:
     source = Path(path)
     text = _load_text(source)
@@ -3529,6 +4535,14 @@ def analyze_logic_file(path: str | Path) -> dict[str, object]:
         payload = _diagnose_lua(source, text)
     elif source.name.lower() == "dockerfile" or source.name.lower().startswith("dockerfile."):
         payload = _diagnose_dockerfile(source, text)
+    elif suffix == ".cs":
+        payload = _diagnose_csharp(source, text)
+    elif suffix == ".php":
+        payload = _diagnose_php(source, text)
+    elif suffix in {".bas", ".vb", ".vbs", ".frm"}:
+        payload = _diagnose_basic(source, text)
+    elif suffix in {".e", ".ec"}:
+        payload = _diagnose_epl(source, text)
     else:
         payload = {
             "language": "unknown",
