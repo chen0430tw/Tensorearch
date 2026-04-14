@@ -61,6 +61,7 @@ _SUFFIX_TO_COMMENT: dict[str, str] = {
     ".cpp": "c_family", ".cc": "c_family", ".cxx": "c_family",
     ".hpp": "c_family", ".c": "c_family", ".h": "c_family",
     ".zig": "c_family",
+    ".kt": "c_family", ".kts": "c_family",
     ".php": "c_family",  # PHP also supports # but // is more common
     ".sql": "sql",
     ".lua": "lua",
@@ -4597,6 +4598,241 @@ def _diagnose_epl(path: str | Path, text: str) -> dict[str, object]:
     }
 
 
+def _build_kotlin_cluster(
+    name: str, start: int, end: int,
+    counts: dict[str, int], event_lines: list[int], full_text: str,
+) -> dict[str, object]:
+    entropy = _shannon_entropy(counts)
+    text_lines = full_text.splitlines()
+    func_text = "\n".join(text_lines[start - 1:end]) if start > 0 else ""
+    return {
+        "scope": "function",
+        "name": name,
+        "cluster": _entropy_bucket(entropy),
+        "entropy": round(entropy, 4),
+        "dominant_signal": _dominant_signal(counts),
+        "logic_labels": _logic_labels(name, func_text, counts, "kotlin"),
+        "counts": dict(counts),
+        "line": start,
+        "modular_flow": _modular_flow_profile(event_lines, start, end),
+    }
+
+
+def _diagnose_kotlin(path: str | Path, text: str) -> dict[str, object]:
+    """Diagnose Kotlin source (.kt/.kts) via regex."""
+    findings: list[DiagnosticItem] = []
+    strengths: list[DiagnosticItem] = []
+    lines = text.splitlines()
+    _suffix = Path(path).suffix.lower()
+    event_lines: list[int] = []
+
+    func_clusters: list[dict[str, object]] = []
+    module_counts: dict[str, int] = {
+        "assign": 0, "call": 0, "if": 0, "loop": 0,
+        "return": 0, "when": 0, "try_catch": 0, "coroutine": 0,
+        "data_class": 0, "sealed": 0, "null_safe": 0, "extension_fn": 0,
+    }
+
+    func_re = re.compile(r"^\s*(?:private |public |internal |protected |override |suspend |inline )*fun\s+(?:\w+\.)?\s*(\w+)\s*[<(]")
+    assign_re = re.compile(r"(?:val |var |\w+\s*=)")
+    call_re = re.compile(r"\w+\.\w+\(|\w+\(")
+    if_re = re.compile(r"^\s*if\s*\(")
+    for_re = re.compile(r"^\s*for\s*\(")
+    while_re = re.compile(r"^\s*while\s*\(")
+    return_re = re.compile(r"^\s*return\s")
+    when_re = re.compile(r"^\s*when\s*[\({]")
+    try_re = re.compile(r"^\s*try\s*\{")
+    coroutine_re = re.compile(r"\b(?:launch|async|withContext|runBlocking|coroutineScope)\s*[\({]")
+    data_class_re = re.compile(r"^\s*data\s+class\s+")
+    sealed_re = re.compile(r"^\s*sealed\s+(?:class|interface)\s+")
+    null_safe_re = re.compile(r"\?\.|!!|\?:")
+    bang_re = re.compile(r"!!")
+    lateinit_re = re.compile(r"\blateinit\s+var\b")
+
+    var_assignments: dict[str, list[int]] = {}
+    var_re = re.compile(r"^\s*(?:val|var)\s+(\w+)")
+
+    cur_func_name = ""
+    cur_func_start = 0
+    cur_func_counts: dict[str, int] = {}
+    cur_func_events: list[int] = []
+    in_func = False
+
+    for idx, line in enumerate(lines, start=1):
+        stripped = _strip_line(line.strip(), _suffix)
+        if not stripped:
+            continue
+
+        fm = func_re.match(stripped)
+        if fm:
+            if in_func and cur_func_name:
+                func_clusters.append(_build_kotlin_cluster(
+                    cur_func_name, cur_func_start, idx - 1,
+                    cur_func_counts, cur_func_events, text,
+                ))
+            cur_func_name = fm.group(1)
+            cur_func_start = idx
+            cur_func_counts = {k: 0 for k in module_counts}
+            cur_func_events = []
+            in_func = True
+
+            if "suspend " in line:
+                module_counts["coroutine"] += 1
+                if in_func:
+                    cur_func_counts["coroutine"] = cur_func_counts.get("coroutine", 0) + 1
+
+            # Extension function detection
+            if re.search(r"fun\s+\w+\.\w+", stripped):
+                module_counts["extension_fn"] += 1
+            continue
+
+        if assign_re.search(stripped):
+            module_counts["assign"] += 1
+            if in_func:
+                cur_func_counts["assign"] = cur_func_counts.get("assign", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+            vm = var_re.match(stripped)
+            if vm:
+                var_assignments.setdefault(vm.group(1), []).append(idx)
+
+        if call_re.search(stripped):
+            module_counts["call"] += 1
+            if in_func:
+                cur_func_counts["call"] = cur_func_counts.get("call", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if if_re.match(stripped):
+            module_counts["if"] += 1
+            if in_func:
+                cur_func_counts["if"] = cur_func_counts.get("if", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if for_re.match(stripped) or while_re.match(stripped):
+            module_counts["loop"] += 1
+            if in_func:
+                cur_func_counts["loop"] = cur_func_counts.get("loop", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if return_re.match(stripped):
+            module_counts["return"] += 1
+            if in_func:
+                cur_func_counts["return"] = cur_func_counts.get("return", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if when_re.match(stripped):
+            module_counts["when"] += 1
+            if in_func:
+                cur_func_counts["when"] = cur_func_counts.get("when", 0) + 1
+
+        if try_re.match(stripped):
+            module_counts["try_catch"] += 1
+            if in_func:
+                cur_func_counts["try_catch"] = cur_func_counts.get("try_catch", 0) + 1
+
+        if coroutine_re.search(stripped):
+            module_counts["coroutine"] += 1
+            if in_func:
+                cur_func_counts["coroutine"] = cur_func_counts.get("coroutine", 0) + 1
+
+        if data_class_re.match(stripped):
+            module_counts["data_class"] += 1
+
+        if sealed_re.match(stripped):
+            module_counts["sealed"] += 1
+
+        if null_safe_re.search(stripped):
+            module_counts["null_safe"] += 1
+            if in_func:
+                cur_func_counts["null_safe"] = cur_func_counts.get("null_safe", 0) + 1
+
+        # Findings
+        if bang_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="force_unwrap",
+                message="'!!' force-unwrap found — can throw NullPointerException, prefer '?.' or '?:'.",
+                line=idx, symbol="!!",
+            ))
+
+        if lateinit_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="lateinit_usage",
+                message="lateinit var detected — can throw UninitializedPropertyAccessException at runtime.",
+                line=idx, symbol="lateinit",
+            ))
+
+    # Close last function
+    if in_func and cur_func_name:
+        func_clusters.append(_build_kotlin_cluster(
+            cur_func_name, cur_func_start, len(lines),
+            cur_func_counts, cur_func_events, text,
+        ))
+
+    # Strengths
+    if module_counts["null_safe"] > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="null_safety",
+            message=f"{module_counts['null_safe']} null-safe operations (?. / ?:) detected.",
+            line=0, symbol="null_safe",
+        ))
+    if module_counts["coroutine"] > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="coroutine_usage",
+            message=f"{module_counts['coroutine']} coroutine usage(s) detected.",
+            line=0, symbol="coroutine",
+        ))
+    if module_counts["data_class"] > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="data_classes",
+            message=f"{module_counts['data_class']} data class(es) — auto-generated equals/hashCode/toString.",
+            line=0, symbol="data_class",
+        ))
+    if module_counts["when"] > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="when_expression",
+            message=f"{module_counts['when']} when expression(s) — exhaustive pattern matching.",
+            line=0, symbol="when",
+        ))
+    if module_counts["extension_fn"] > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="extension_functions",
+            message=f"{module_counts['extension_fn']} extension function(s) — non-invasive API extension.",
+            line=0, symbol="extension_fn",
+        ))
+
+    entropy = _shannon_entropy(module_counts)
+    n_lines = max(len(lines), 1)
+
+    return {
+        "language": "kotlin",
+        "source_file": str(path),
+        "findings": [item.to_dict() for item in findings],
+        "strengths": [item.to_dict() for item in strengths],
+        "entropy_clusters": [
+            {
+                "scope": "module",
+                "name": "<module>",
+                "cluster": _entropy_bucket(entropy),
+                "entropy": round(entropy, 4),
+                "dominant_signal": _dominant_signal(module_counts),
+                "logic_labels": _logic_labels("<module>", text, module_counts, "kotlin"),
+                "counts": dict(module_counts),
+                "modular_flow": _modular_flow_profile(event_lines, 1, n_lines),
+            },
+            *func_clusters,
+        ],
+    }
+
+
 def analyze_logic_file(path: str | Path) -> dict[str, object]:
     source = Path(path)
     text = _load_text(source)
@@ -4640,6 +4876,8 @@ def analyze_logic_file(path: str | Path) -> dict[str, object]:
         payload = _diagnose_basic(source, text)
     elif suffix in {".e", ".ec"}:
         payload = _diagnose_epl(source, text)
+    elif suffix in {".kt", ".kts"}:
+        payload = _diagnose_kotlin(source, text)
     else:
         payload = {
             "language": "unknown",
