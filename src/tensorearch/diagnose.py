@@ -638,7 +638,10 @@ def _diagnose_shell(path: str | Path, text: str) -> dict[str, object]:
             event_lines.append(idx)
         m = assign_re.search(line)
         if m:
-            assignment_lines.setdefault(m.group(1), []).append(idx)
+            # Exclude accumulation: +=, $(), ${}
+            is_accum = "+=" in line or "=$(" in line or "=${" in line
+            if not is_accum:
+                assignment_lines.setdefault(m.group(1), []).append(idx)
             counts["assign"] += 1
         if pipe_re.search(line):
             counts["pipeline"] += 1
@@ -1326,13 +1329,15 @@ def _diagnose_rust(path: str | Path, text: str) -> dict[str, object]:
             cur_func_counts, cur_func_events, text,
         ))
 
-    # Variable overwrite detection
+    # Variable overwrite detection (exclude Rust accumulation: vec!, Vec::new, .collect, .into)
+    _accum_re = re.compile(r"=\s*(?:vec!\[|Vec::new|BTreeMap::new|HashMap::new|\.collect|\.into|\.extend)")
     for name, hit_lines in var_assignments.items():
-        if len(hit_lines) >= 5 and name not in ("_", "i", "j", "k", "n", "idx"):
+        real = [ln for ln in hit_lines if not _accum_re.search(lines[ln - 1])]
+        if len(real) >= 5 and name not in ("_", "i", "j", "k", "n", "idx"):
             findings.append(DiagnosticItem(
                 severity="warning", kind="repeated_overwrite",
-                message=f"Variable '{name}' is assigned {len(hit_lines)} times. May hide effective computation path.",
-                line=hit_lines[0], symbol=name,
+                message=f"Variable '{name}' is assigned {len(real)} times. May hide effective computation path.",
+                line=real[0], symbol=name,
             ))
 
     # Strengths
@@ -1931,13 +1936,15 @@ def _diagnose_typescript(path: str | Path, text: str) -> dict[str, object]:
             cur_func_counts, cur_func_events, text,
         ))
 
-    # Variable overwrite detection
+    # Variable overwrite detection (exclude JS accumulation: spread, concat, Array.from, map/filter/reduce)
+    _accum_re = re.compile(r"=\s*(?:\[\.\.\.|\.concat\(|Array\.from\(|new\s+Array\(|\.map\(|\.filter\(|\.reduce\()")
     for name, hit_lines in var_assignments.items():
-        if len(hit_lines) >= 5 and name not in ("_", "i", "j", "k", "n", "idx"):
+        real = [ln for ln in hit_lines if not _accum_re.search(lines[ln - 1])]
+        if len(real) >= 5 and name not in ("_", "i", "j", "k", "n", "idx"):
             findings.append(DiagnosticItem(
                 severity="warning", kind="repeated_overwrite",
-                message=f"Variable '{name}' is assigned {len(hit_lines)} times. May hide effective computation path.",
-                line=hit_lines[0], symbol=name,
+                message=f"Variable '{name}' is assigned {len(real)} times. May hide effective computation path.",
+                line=real[0], symbol=name,
             ))
 
     # --- JS Strengths ---
@@ -2232,13 +2239,15 @@ def _diagnose_java(path: str | Path, text: str) -> dict[str, object]:
             cur_func_counts, cur_func_events, text,
         ))
 
-    # Variable overwrite detection
+    # Variable overwrite detection (exclude Java accumulation: new ArrayList/HashMap, .stream().collect(), Collections.*)
+    _accum_re = re.compile(r"=\s*(?:new\s+(?:Array|Hash|Tree|Linked|Concurrent|Copy)|\.stream\(\)|\.collect\(|Collections\.|Arrays\.)")
     for name, hit_lines in var_assignments.items():
-        if len(hit_lines) >= 5 and name not in ("_", "i", "j", "k", "n", "idx"):
+        real = [ln for ln in hit_lines if not _accum_re.search(lines[ln - 1])]
+        if len(real) >= 5 and name not in ("_", "i", "j", "k", "n", "idx"):
             findings.append(DiagnosticItem(
                 severity="warning", kind="repeated_overwrite",
-                message=f"Variable '{name}' is assigned {len(hit_lines)} times. May hide effective computation path.",
-                line=hit_lines[0], symbol=name,
+                message=f"Variable '{name}' is assigned {len(real)} times. May hide effective computation path.",
+                line=real[0], symbol=name,
             ))
 
     # Strengths
