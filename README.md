@@ -161,6 +161,9 @@ Tensorearch already includes:
 - cross-architecture comparison engine
 - agent-friendly JSON CLI
 - source-level modular flow analysis for logic distribution uniformity
+- multi-language diagnose engine (20 languages, regex + AST hybrid)
+- comment/string pre-filter layer for regex precision
+- PPM pseudocode bridge for binary diagnosis
 - Windows `exe` packaging
 
 ## Current Metrics
@@ -198,7 +201,7 @@ Current reports can emit:
 | `ablate` | Simulate an intervention (remove slice, scale edge, etc.) and show delta |
 | `adapt` | Convert source code or architecture description into a trace (16 families) |
 | `space` | Classify source code into one of 15 model families (18-dim projection) |
-| `diagnose` | Audit source-level logic: entropy clusters, modular flow, mutation tracking |
+| `diagnose` | Audit source-level logic: entropy clusters, modular flow, mutation tracking (20 languages) |
 | `export` | Write inspect or compare results to a file |
 | `help` | Show complete usage guide with all commands, families, and examples |
 
@@ -225,6 +228,35 @@ dist\tensorearch.exe space --source-file model.py --json
 dist\tensorearch.exe diagnose --source-file script.py --json
 dist\tensorearch.exe adapt --adapter source --input model.py --output trace.json
 ```
+
+### Supported Languages (20)
+
+| # | Language | Extensions | Method | Key Detections |
+|---|----------|-----------|--------|----------------|
+| 1 | Python | .py | AST | multi-stage mutation, conflicting signals, score normalization |
+| 2 | Shell | .sh/.bash/.ps1/.cmd/.bat | regex | destructive commands, repeated overwrites, pipelines |
+| 3 | Go | .go | regex | panic, error handling (if err != nil), defer, goroutines |
+| 4 | C-pseudo | .c/.h/.pseudo/.ppc | regex | dangerous APIs, goto, bitmask ops (PPM bridge) |
+| 5 | Rust | .rs | regex | unsafe blocks, unwrap(), panic!(), Result/Option |
+| 6 | JavaScript | .js/.jsx/.mjs | regex | eval(), var usage, console.log, callback hell |
+| 7 | TypeScript | .ts/.tsx | regex | any type, @ts-ignore, generics, interfaces |
+| 8 | Java | .java | regex | empty catch, System.exit(), @Override, try-with-resources |
+| 9 | Zig | .zig | regex | @panic, defer/errdefer, comptime, error unions |
+| 10 | C++ | .cpp/.cc/.cxx/.hpp | regex | raw new/delete, goto, reinterpret_cast, RAII, smart ptrs |
+| 11 | YAML | .yaml/.yml | regex | deep nesting (>6), anchors, long lines |
+| 12 | SQL | .sql | regex | SELECT *, DELETE without WHERE, DROP TABLE, subqueries |
+| 13 | Dockerfile | Dockerfile | regex | FROM latest, no HEALTHCHECK, curl\|bash, multi-stage |
+| 14 | Ruby | .rb | regex | eval(), system(), rescue Exception, blocks/yield |
+| 15 | Lua | .lua | regex | loadstring, global vars, coroutines, metatables |
+| 16 | C# | .cs | regex | empty catch, GC.Collect(), async/await, LINQ, nullable |
+| 17 | PHP | .php | regex | eval(), exec(), extract(), mysql_*, PDO, namespaces |
+| 18 | Basic/VB | .bas/.vb/.vbs/.frm | regex | On Error Resume Next, GoTo, Option Explicit |
+| 19 | EPL | .e/.ec | regex | shell execution, DLL without error handling (Chinese keywords) |
+| 20 | Kotlin | .kt/.kts | regex | !! force-unwrap, lateinit, coroutines, null-safe ops, when |
+
+All regex-based analyzers include a **comment/string pre-filter layer** (`_strip_line`) that removes string literals and line comments before pattern matching, achieving near-AST precision without external parser dependencies.
+
+For binary files (.sys/.exe/.dll), use PPM (ParadexMonitor) to generate C-like pseudocode, then feed into Tensorearch's C-pseudo analyzer.
 
 For source-level `diagnose`, each module/function/script scope now includes a `modular_flow` profile:
 
