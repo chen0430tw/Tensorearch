@@ -4,15 +4,45 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tensorearch"
-version = "0.1.0"
+version = "1.0.0"
 description = "Architecture inspection toolkit for slice topology, throughput, and bottleneck analysis"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
 authors = [
   { name = "chen0430tw" }
 ]
 dependencies = []
+keywords = [
+  "architecture-analysis",
+  "model-inspection",
+  "topology",
+  "bottleneck-analysis",
+  "diffusion",
+  "transformer",
+  "gnn",
+  "multimodal",
+]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.urls]
+Homepage = "https://github.com/chen0430tw/Tensorearch"
+Repository = "https://github.com/chen0430tw/Tensorearch"
+Issues = "https://github.com/chen0430tw/Tensorearch/issues"
+
+[project.scripts]
+tensorearch = "tensorearch.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

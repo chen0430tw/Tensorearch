@@ -1,0 +1,28 @@
+# Application configuration
+server:
+  host: localhost
+  port: 8080
+  ssl:
+    enabled: true
+    cert: &cert_path /etc/ssl/cert.pem
+    key: /etc/ssl/key.pem
+
+database:
+  primary:
+    host: db.example.com
+    port: 5432
+    credentials:
+      username: admin
+      password: secret
+      ssl_cert: *cert_path
+      nested:
+        very:
+          deep:
+            level:
+              seven:
+                value: too_deep
+
+logging:
+  level: info
+  format: json
+  a_very_long_line_that_exceeds_two_hundred_characters_to_trigger_the_warning_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa: true

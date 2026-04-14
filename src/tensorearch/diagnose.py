@@ -1063,6 +1063,2437 @@ def _build_pseudo_cluster(
     }
 
 
+def _build_rust_cluster(
+    name: str, start: int, end: int,
+    counts: dict[str, int], event_lines: list[int], full_text: str,
+) -> dict[str, object]:
+    """Build an entropy cluster for a Rust function."""
+    entropy = _shannon_entropy(counts)
+    text_lines = full_text.splitlines()
+    func_text = "\n".join(text_lines[start - 1:end]) if start > 0 else ""
+    return {
+        "scope": "function",
+        "name": name,
+        "cluster": _entropy_bucket(entropy),
+        "entropy": round(entropy, 4),
+        "dominant_signal": _dominant_signal(counts),
+        "logic_labels": _logic_labels(name, func_text, counts, "rust"),
+        "counts": dict(counts),
+        "line": start,
+        "modular_flow": _modular_flow_profile(event_lines, start, end),
+    }
+
+
+def _diagnose_rust(path: str | Path, text: str) -> dict[str, object]:
+    """Diagnose Rust source via regex pattern matching (no AST required)."""
+    findings: list[DiagnosticItem] = []
+    strengths: list[DiagnosticItem] = []
+    lines = text.splitlines()
+    event_lines: list[int] = []
+
+    func_clusters: list[dict[str, object]] = []
+    module_counts: dict[str, int] = {
+        "assign": 0, "call": 0, "if": 0, "loop": 0,
+        "return": 0, "match_arm": 0, "unsafe": 0, "lifetime": 0,
+        "macro_call": 0, "error_propagation": 0,
+    }
+
+    # Regex patterns for Rust
+    func_re = re.compile(r"^\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)\s*[<(]")
+    assign_re = re.compile(r"(?:let\s+(?:mut\s+)?\w+\s*(?::\s*\S+\s*)?=|[^=!<>]=[^=])")
+    call_re = re.compile(r"\w+\s*\(")
+    if_re = re.compile(r"^\s*(?:if\s+|else\s+if\s+)")
+    loop_re = re.compile(r"^\s*(?:for\s+|while\s+|loop\s*\{)")
+    return_re = re.compile(r"^\s*return\s")
+    match_arm_re = re.compile(r"^\s*(?:\w+|_)\s*(?:\(.*?\)\s*)?(?:\|.*?)?=>\s*")
+    unsafe_re = re.compile(r"\bunsafe\s*\{")
+    lifetime_re = re.compile(r"[&<]'[a-z]\w*")
+    macro_call_re = re.compile(r"\w+!\s*[\(\[\{]")
+    error_prop_re = re.compile(r"\?\s*;|\?\s*$")
+    unwrap_re = re.compile(r"\.unwrap\(\)")
+    panic_re = re.compile(r"\bpanic!\s*\(")
+    result_option_re = re.compile(r"->\s*(?:Result|Option)\b")
+
+    # Variable overwrite tracking
+    var_assignments: dict[str, list[int]] = {}
+    var_assign_re = re.compile(r"^\s*(?:let\s+(?:mut\s+)?)?(\w+)\s*(?::\s*\S+\s*)?=\s*")
+
+    # Current function tracking
+    cur_func_name = ""
+    cur_func_start = 0
+    cur_func_counts: dict[str, int] = {}
+    cur_func_events: list[int] = []
+    in_func = False
+
+    for idx, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("//"):
+            continue
+
+        # Detect function boundaries
+        fm = func_re.match(line)
+        if fm:
+            if in_func and cur_func_name:
+                func_clusters.append(_build_rust_cluster(
+                    cur_func_name, cur_func_start, idx - 1,
+                    cur_func_counts, cur_func_events, text,
+                ))
+            cur_func_name = fm.group(1)
+            cur_func_start = idx
+            cur_func_counts = {k: 0 for k in module_counts}
+            cur_func_events = []
+            in_func = True
+            continue
+
+        # --- Count patterns ---
+        if assign_re.search(stripped):
+            module_counts["assign"] += 1
+            if in_func:
+                cur_func_counts["assign"] = cur_func_counts.get("assign", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+            vm = var_assign_re.match(stripped)
+            if vm:
+                var_assignments.setdefault(vm.group(1), []).append(idx)
+
+        if call_re.search(stripped):
+            module_counts["call"] += 1
+            if in_func:
+                cur_func_counts["call"] = cur_func_counts.get("call", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if if_re.match(stripped):
+            module_counts["if"] += 1
+            if in_func:
+                cur_func_counts["if"] = cur_func_counts.get("if", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if loop_re.match(stripped):
+            module_counts["loop"] += 1
+            if in_func:
+                cur_func_counts["loop"] = cur_func_counts.get("loop", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if return_re.match(stripped):
+            module_counts["return"] += 1
+            if in_func:
+                cur_func_counts["return"] = cur_func_counts.get("return", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if match_arm_re.match(stripped):
+            module_counts["match_arm"] += 1
+            if in_func:
+                cur_func_counts["match_arm"] = cur_func_counts.get("match_arm", 0) + 1
+
+        if unsafe_re.search(stripped):
+            module_counts["unsafe"] += 1
+            if in_func:
+                cur_func_counts["unsafe"] = cur_func_counts.get("unsafe", 0) + 1
+            findings.append(DiagnosticItem(
+                severity="warning", kind="unsafe_block",
+                message="unsafe block found — verify memory safety invariants are upheld.",
+                line=idx, symbol="unsafe",
+            ))
+
+        if lifetime_re.search(stripped):
+            module_counts["lifetime"] += 1
+            if in_func:
+                cur_func_counts["lifetime"] = cur_func_counts.get("lifetime", 0) + 1
+
+        if macro_call_re.search(stripped):
+            module_counts["macro_call"] += 1
+            if in_func:
+                cur_func_counts["macro_call"] = cur_func_counts.get("macro_call", 0) + 1
+
+        if error_prop_re.search(stripped):
+            module_counts["error_propagation"] += 1
+            if in_func:
+                cur_func_counts["error_propagation"] = cur_func_counts.get("error_propagation", 0) + 1
+
+        # --- Findings ---
+        if unwrap_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="unwrap_call",
+                message=".unwrap() can panic at runtime — prefer pattern matching or ? operator.",
+                line=idx, symbol="unwrap",
+            ))
+
+        if panic_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="panic_macro",
+                message="panic!() found — prefer returning Result in library code.",
+                line=idx, symbol="panic",
+            ))
+
+    # Close last function
+    if in_func and cur_func_name:
+        func_clusters.append(_build_rust_cluster(
+            cur_func_name, cur_func_start, len(lines),
+            cur_func_counts, cur_func_events, text,
+        ))
+
+    # Variable overwrite detection
+    for name, hit_lines in var_assignments.items():
+        if len(hit_lines) >= 5 and name not in ("_", "i", "j", "k", "n", "idx"):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="repeated_overwrite",
+                message=f"Variable '{name}' is assigned {len(hit_lines)} times. May hide effective computation path.",
+                line=hit_lines[0], symbol=name,
+            ))
+
+    # Strengths
+    if module_counts["error_propagation"] > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="error_propagation",
+            message=f"{module_counts['error_propagation']} error propagation(s) via ? operator.",
+            line=0, symbol="error_propagation",
+        ))
+
+    # Scan for Result/Option return types (strengths)
+    result_option_count = sum(1 for line in lines if result_option_re.search(line))
+    if result_option_count > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="result_option_handling",
+            message=f"{result_option_count} function(s) return Result/Option for explicit error handling.",
+            line=0, symbol="Result",
+        ))
+
+    if module_counts["match_arm"] > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="pattern_matching",
+            message=f"{module_counts['match_arm']} match arm(s) detected — exhaustive pattern matching.",
+            line=0, symbol="match",
+        ))
+
+    if module_counts["lifetime"] > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="lifetime_annotations",
+            message=f"{module_counts['lifetime']} lifetime annotation(s) for explicit ownership tracking.",
+            line=0, symbol="lifetime",
+        ))
+
+    # Module-level entropy
+    entropy = _shannon_entropy(module_counts)
+    n_lines = max(len(lines), 1)
+
+    return {
+        "language": "rust",
+        "source_file": str(path),
+        "findings": [item.to_dict() for item in findings],
+        "strengths": [item.to_dict() for item in strengths],
+        "entropy_clusters": [
+            {
+                "scope": "module",
+                "name": "<module>",
+                "cluster": _entropy_bucket(entropy),
+                "entropy": round(entropy, 4),
+                "dominant_signal": _dominant_signal(module_counts),
+                "logic_labels": _logic_labels("<module>", text, module_counts, "rust"),
+                "counts": dict(module_counts),
+                "modular_flow": _modular_flow_profile(event_lines, 1, n_lines),
+            },
+            *func_clusters,
+        ],
+    }
+
+
+# ===================================================================
+#  JavaScript Analyzer
+# ===================================================================
+
+def _build_js_cluster(
+    name: str, start: int, end: int,
+    counts: dict[str, int], event_lines: list[int], full_text: str,
+) -> dict[str, object]:
+    """Build an entropy cluster for a JavaScript function."""
+    entropy = _shannon_entropy(counts)
+    text_lines = full_text.splitlines()
+    func_text = "\n".join(text_lines[start - 1:end]) if start > 0 else ""
+    return {
+        "scope": "function",
+        "name": name,
+        "cluster": _entropy_bucket(entropy),
+        "entropy": round(entropy, 4),
+        "dominant_signal": _dominant_signal(counts),
+        "logic_labels": _logic_labels(name, func_text, counts, "javascript"),
+        "counts": dict(counts),
+        "line": start,
+        "modular_flow": _modular_flow_profile(event_lines, start, end),
+    }
+
+
+def _diagnose_javascript(path: str | Path, text: str) -> dict[str, object]:
+    """Diagnose JavaScript source via regex pattern matching (no AST required)."""
+    findings: list[DiagnosticItem] = []
+    strengths: list[DiagnosticItem] = []
+    lines = text.splitlines()
+    event_lines: list[int] = []
+
+    func_clusters: list[dict[str, object]] = []
+    module_counts: dict[str, int] = {
+        "assign": 0, "call": 0, "if": 0, "loop": 0,
+        "return": 0, "async_await": 0, "arrow_fn": 0, "try_catch": 0,
+        "promise": 0, "callback": 0,
+    }
+
+    # Regex patterns for JavaScript
+    # function foo(, const foo = (, const foo = async (
+    func_re = re.compile(
+        r"^\s*(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\("
+        r"|^\s*(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\("
+        r"|^\s*(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\w*\s*=>\s*"
+    )
+    assign_re = re.compile(r"(?:(?:const|let|var)\s+\w+\s*=|[^=!<>]=[^=])")
+    call_re = re.compile(r"\w+\s*\(")
+    if_re = re.compile(r"^\s*(?:if\s*\(|else\s+if\s*\()")
+    loop_re = re.compile(r"^\s*(?:for\s*\(|while\s*\(|do\s*\{)")
+    return_re = re.compile(r"^\s*return[\s;]")
+    async_await_re = re.compile(r"\bawait\s+|\basync\s+")
+    arrow_fn_re = re.compile(r"=>\s*[\{(]|=>\s*\w")
+    try_catch_re = re.compile(r"^\s*(?:try\s*\{|catch\s*\()")
+    promise_re = re.compile(r"new\s+Promise\b|\.then\s*\(|\.catch\s*\(|Promise\.\w+\s*\(")
+    callback_re = re.compile(r"\w+\s*\(\s*(?:function\s*\(|(?:\w+|\([^)]*\))\s*=>)")
+    eval_re = re.compile(r"\beval\s*\(")
+    var_re = re.compile(r"^\s*var\s+")
+    console_re = re.compile(r"\bconsole\.\w+\s*\(")
+    destructure_re = re.compile(r"(?:const|let|var)\s+[\{\[].+[\}\]]\s*=")
+
+    # Variable overwrite tracking
+    var_assignments: dict[str, list[int]] = {}
+    var_assign_re = re.compile(r"^\s*(?:(?:const|let|var)\s+)?(\w+)\s*=\s*")
+
+    # Current function tracking
+    cur_func_name = ""
+    cur_func_start = 0
+    cur_func_counts: dict[str, int] = {}
+    cur_func_events: list[int] = []
+    in_func = False
+
+    # Callback nesting tracking
+    callback_nesting = 0
+    max_callback_nesting = 0
+
+    is_test_file = bool(re.search(r"\.(?:test|spec)\.", str(path)))
+
+    for idx, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("//"):
+            continue
+
+        # Detect function boundaries
+        fm = func_re.match(line)
+        if fm:
+            func_name = fm.group(1) or fm.group(2) or fm.group(3)
+            if func_name:
+                if in_func and cur_func_name:
+                    func_clusters.append(_build_js_cluster(
+                        cur_func_name, cur_func_start, idx - 1,
+                        cur_func_counts, cur_func_events, text,
+                    ))
+                cur_func_name = func_name
+                cur_func_start = idx
+                cur_func_counts = {k: 0 for k in module_counts}
+                cur_func_events = []
+                in_func = True
+
+        # --- Count patterns ---
+        if assign_re.search(stripped):
+            module_counts["assign"] += 1
+            if in_func:
+                cur_func_counts["assign"] = cur_func_counts.get("assign", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+            vm = var_assign_re.match(stripped)
+            if vm:
+                var_assignments.setdefault(vm.group(1), []).append(idx)
+
+        if call_re.search(stripped):
+            module_counts["call"] += 1
+            if in_func:
+                cur_func_counts["call"] = cur_func_counts.get("call", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if if_re.match(stripped):
+            module_counts["if"] += 1
+            if in_func:
+                cur_func_counts["if"] = cur_func_counts.get("if", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if loop_re.match(stripped):
+            module_counts["loop"] += 1
+            if in_func:
+                cur_func_counts["loop"] = cur_func_counts.get("loop", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if return_re.match(stripped):
+            module_counts["return"] += 1
+            if in_func:
+                cur_func_counts["return"] = cur_func_counts.get("return", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if async_await_re.search(stripped):
+            module_counts["async_await"] += 1
+            if in_func:
+                cur_func_counts["async_await"] = cur_func_counts.get("async_await", 0) + 1
+
+        if arrow_fn_re.search(stripped):
+            module_counts["arrow_fn"] += 1
+            if in_func:
+                cur_func_counts["arrow_fn"] = cur_func_counts.get("arrow_fn", 0) + 1
+
+        if try_catch_re.match(stripped):
+            module_counts["try_catch"] += 1
+            if in_func:
+                cur_func_counts["try_catch"] = cur_func_counts.get("try_catch", 0) + 1
+
+        if promise_re.search(stripped):
+            module_counts["promise"] += 1
+            if in_func:
+                cur_func_counts["promise"] = cur_func_counts.get("promise", 0) + 1
+
+        if callback_re.search(stripped):
+            module_counts["callback"] += 1
+            callback_nesting += 1
+            if in_func:
+                cur_func_counts["callback"] = cur_func_counts.get("callback", 0) + 1
+        else:
+            # Reset nesting on non-callback lines (simplified heuristic)
+            if callback_nesting > max_callback_nesting:
+                max_callback_nesting = callback_nesting
+            callback_nesting = 0
+
+        # --- Findings ---
+        if eval_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="eval_usage",
+                message="eval() is a security risk — prefer safer alternatives.",
+                line=idx, symbol="eval",
+            ))
+
+        if var_re.match(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="var_usage",
+                message="'var' has function-scoped hoisting — prefer 'let' or 'const'.",
+                line=idx, symbol="var",
+            ))
+
+        if console_re.search(stripped) and not is_test_file:
+            findings.append(DiagnosticItem(
+                severity="warning", kind="console_in_production",
+                message="console.log in non-test file — consider removing or using a logger.",
+                line=idx, symbol="console",
+            ))
+
+    # Check max callback nesting
+    if callback_nesting > max_callback_nesting:
+        max_callback_nesting = callback_nesting
+    if max_callback_nesting >= 3:
+        findings.append(DiagnosticItem(
+            severity="warning", kind="callback_hell",
+            message=f"{max_callback_nesting} nested callbacks detected — consider refactoring to async/await.",
+            line=0, symbol="callback",
+        ))
+
+    # Close last function
+    if in_func and cur_func_name:
+        func_clusters.append(_build_js_cluster(
+            cur_func_name, cur_func_start, len(lines),
+            cur_func_counts, cur_func_events, text,
+        ))
+
+    # Variable overwrite detection
+    for name, hit_lines in var_assignments.items():
+        if len(hit_lines) >= 5 and name not in ("_", "i", "j", "k", "n", "idx"):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="repeated_overwrite",
+                message=f"Variable '{name}' is assigned {len(hit_lines)} times. May hide effective computation path.",
+                line=hit_lines[0], symbol=name,
+            ))
+
+    # Strengths
+    if module_counts["async_await"] > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="async_await_usage",
+            message=f"{module_counts['async_await']} async/await usage(s) for readable asynchronous code.",
+            line=0, symbol="async",
+        ))
+
+    destructure_count = sum(1 for line in lines if destructure_re.search(line))
+    if destructure_count > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="destructuring",
+            message=f"{destructure_count} destructuring assignment(s) for concise data extraction.",
+            line=0, symbol="destructure",
+        ))
+
+    if module_counts["arrow_fn"] > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="arrow_functions",
+            message=f"{module_counts['arrow_fn']} arrow function(s) for concise function expressions.",
+            line=0, symbol="arrow",
+        ))
+
+    # Module-level entropy
+    entropy = _shannon_entropy(module_counts)
+    n_lines = max(len(lines), 1)
+
+    return {
+        "language": "javascript",
+        "source_file": str(path),
+        "findings": [item.to_dict() for item in findings],
+        "strengths": [item.to_dict() for item in strengths],
+        "entropy_clusters": [
+            {
+                "scope": "module",
+                "name": "<module>",
+                "cluster": _entropy_bucket(entropy),
+                "entropy": round(entropy, 4),
+                "dominant_signal": _dominant_signal(module_counts),
+                "logic_labels": _logic_labels("<module>", text, module_counts, "javascript"),
+                "counts": dict(module_counts),
+                "modular_flow": _modular_flow_profile(event_lines, 1, n_lines),
+            },
+            *func_clusters,
+        ],
+    }
+
+
+# ===================================================================
+#  TypeScript Analyzer
+# ===================================================================
+
+def _build_ts_cluster(
+    name: str, start: int, end: int,
+    counts: dict[str, int], event_lines: list[int], full_text: str,
+) -> dict[str, object]:
+    """Build an entropy cluster for a TypeScript function."""
+    entropy = _shannon_entropy(counts)
+    text_lines = full_text.splitlines()
+    func_text = "\n".join(text_lines[start - 1:end]) if start > 0 else ""
+    return {
+        "scope": "function",
+        "name": name,
+        "cluster": _entropy_bucket(entropy),
+        "entropy": round(entropy, 4),
+        "dominant_signal": _dominant_signal(counts),
+        "logic_labels": _logic_labels(name, func_text, counts, "typescript"),
+        "counts": dict(counts),
+        "line": start,
+        "modular_flow": _modular_flow_profile(event_lines, start, end),
+    }
+
+
+def _diagnose_typescript(path: str | Path, text: str) -> dict[str, object]:
+    """Diagnose TypeScript source via regex pattern matching (no AST required).
+
+    Reuses JavaScript logic and adds TypeScript-specific counts, findings,
+    and strengths (type_annotation, interface, generic, type_assertion, any, ts-ignore).
+    """
+    findings: list[DiagnosticItem] = []
+    strengths: list[DiagnosticItem] = []
+    lines = text.splitlines()
+    event_lines: list[int] = []
+
+    func_clusters: list[dict[str, object]] = []
+    module_counts: dict[str, int] = {
+        # JS base counts
+        "assign": 0, "call": 0, "if": 0, "loop": 0,
+        "return": 0, "async_await": 0, "arrow_fn": 0, "try_catch": 0,
+        "promise": 0, "callback": 0,
+        # TS-specific counts
+        "type_annotation": 0, "interface": 0, "generic": 0, "type_assertion": 0,
+    }
+
+    # --- JS regex patterns (same as _diagnose_javascript) ---
+    func_re = re.compile(
+        r"^\s*(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*[<(]"
+        r"|^\s*(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\("
+        r"|^\s*(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\w*\s*=>\s*"
+    )
+    assign_re = re.compile(r"(?:(?:const|let|var)\s+\w+\s*(?::\s*\S+\s*)?=|[^=!<>]=[^=])")
+    call_re = re.compile(r"\w+\s*\(")
+    if_re = re.compile(r"^\s*(?:if\s*\(|else\s+if\s*\()")
+    loop_re = re.compile(r"^\s*(?:for\s*\(|while\s*\(|do\s*\{)")
+    return_re = re.compile(r"^\s*return[\s;]")
+    async_await_re = re.compile(r"\bawait\s+|\basync\s+")
+    arrow_fn_re = re.compile(r"=>\s*[\{(]|=>\s*\w")
+    try_catch_re = re.compile(r"^\s*(?:try\s*\{|catch\s*\()")
+    promise_re = re.compile(r"new\s+Promise\b|\.then\s*\(|\.catch\s*\(|Promise\.\w+\s*\(")
+    callback_re = re.compile(r"\w+\s*\(\s*(?:function\s*\(|(?:\w+|\([^)]*\))\s*=>)")
+    eval_re = re.compile(r"\beval\s*\(")
+    var_re = re.compile(r"^\s*var\s+")
+    console_re = re.compile(r"\bconsole\.\w+\s*\(")
+    destructure_re = re.compile(r"(?:const|let|var)\s+[\{\[].+[\}\]]\s*(?::\s*\S+\s*)?=")
+
+    # --- TS-specific regex patterns ---
+    type_annotation_re = re.compile(r":\s*(?:string|number|boolean|void|null|undefined|never|any|unknown|\w+(?:<[^>]+>)?)\b")
+    interface_re = re.compile(r"^\s*(?:export\s+)?interface\s+(\w+)")
+    generic_re = re.compile(r"<\s*\w+(?:\s+extends\s+\w+)?\s*(?:,\s*\w+(?:\s+extends\s+\w+)?\s*)*>")
+    type_assertion_re = re.compile(r"\bas\s+\w+|<\w+>\s*\w+")
+    any_re = re.compile(r":\s*any\b")
+    ts_ignore_re = re.compile(r"@ts-ignore|@ts-nocheck")
+
+    # Variable overwrite tracking
+    var_assignments: dict[str, list[int]] = {}
+    var_assign_re = re.compile(r"^\s*(?:(?:const|let|var)\s+)?(\w+)\s*(?::\s*\S+\s*)?=\s*")
+
+    # Current function tracking
+    cur_func_name = ""
+    cur_func_start = 0
+    cur_func_counts: dict[str, int] = {}
+    cur_func_events: list[int] = []
+    in_func = False
+
+    callback_nesting = 0
+    max_callback_nesting = 0
+
+    is_test_file = bool(re.search(r"\.(?:test|spec)\.", str(path)))
+
+    for idx, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("//"):
+            # Still check for ts-ignore in comments
+            if ts_ignore_re.search(stripped):
+                findings.append(DiagnosticItem(
+                    severity="warning", kind="ts_ignore",
+                    message="@ts-ignore suppresses type checking — fix the underlying type error instead.",
+                    line=idx, symbol="ts-ignore",
+                ))
+            continue
+
+        # Detect function boundaries
+        fm = func_re.match(line)
+        if fm:
+            func_name = fm.group(1) or fm.group(2) or fm.group(3)
+            if func_name:
+                if in_func and cur_func_name:
+                    func_clusters.append(_build_ts_cluster(
+                        cur_func_name, cur_func_start, idx - 1,
+                        cur_func_counts, cur_func_events, text,
+                    ))
+                cur_func_name = func_name
+                cur_func_start = idx
+                cur_func_counts = {k: 0 for k in module_counts}
+                cur_func_events = []
+                in_func = True
+
+        # --- JS base counts ---
+        if assign_re.search(stripped):
+            module_counts["assign"] += 1
+            if in_func:
+                cur_func_counts["assign"] = cur_func_counts.get("assign", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+            vm = var_assign_re.match(stripped)
+            if vm:
+                var_assignments.setdefault(vm.group(1), []).append(idx)
+
+        if call_re.search(stripped):
+            module_counts["call"] += 1
+            if in_func:
+                cur_func_counts["call"] = cur_func_counts.get("call", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if if_re.match(stripped):
+            module_counts["if"] += 1
+            if in_func:
+                cur_func_counts["if"] = cur_func_counts.get("if", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if loop_re.match(stripped):
+            module_counts["loop"] += 1
+            if in_func:
+                cur_func_counts["loop"] = cur_func_counts.get("loop", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if return_re.match(stripped):
+            module_counts["return"] += 1
+            if in_func:
+                cur_func_counts["return"] = cur_func_counts.get("return", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if async_await_re.search(stripped):
+            module_counts["async_await"] += 1
+            if in_func:
+                cur_func_counts["async_await"] = cur_func_counts.get("async_await", 0) + 1
+
+        if arrow_fn_re.search(stripped):
+            module_counts["arrow_fn"] += 1
+            if in_func:
+                cur_func_counts["arrow_fn"] = cur_func_counts.get("arrow_fn", 0) + 1
+
+        if try_catch_re.match(stripped):
+            module_counts["try_catch"] += 1
+            if in_func:
+                cur_func_counts["try_catch"] = cur_func_counts.get("try_catch", 0) + 1
+
+        if promise_re.search(stripped):
+            module_counts["promise"] += 1
+            if in_func:
+                cur_func_counts["promise"] = cur_func_counts.get("promise", 0) + 1
+
+        if callback_re.search(stripped):
+            module_counts["callback"] += 1
+            callback_nesting += 1
+            if in_func:
+                cur_func_counts["callback"] = cur_func_counts.get("callback", 0) + 1
+        else:
+            if callback_nesting > max_callback_nesting:
+                max_callback_nesting = callback_nesting
+            callback_nesting = 0
+
+        # --- TS-specific counts ---
+        if type_annotation_re.search(stripped):
+            module_counts["type_annotation"] += 1
+            if in_func:
+                cur_func_counts["type_annotation"] = cur_func_counts.get("type_annotation", 0) + 1
+
+        if interface_re.match(stripped):
+            module_counts["interface"] += 1
+            if in_func:
+                cur_func_counts["interface"] = cur_func_counts.get("interface", 0) + 1
+
+        if generic_re.search(stripped):
+            module_counts["generic"] += 1
+            if in_func:
+                cur_func_counts["generic"] = cur_func_counts.get("generic", 0) + 1
+
+        if type_assertion_re.search(stripped):
+            module_counts["type_assertion"] += 1
+            if in_func:
+                cur_func_counts["type_assertion"] = cur_func_counts.get("type_assertion", 0) + 1
+
+        # --- JS Findings ---
+        if eval_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="eval_usage",
+                message="eval() is a security risk — prefer safer alternatives.",
+                line=idx, symbol="eval",
+            ))
+
+        if var_re.match(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="var_usage",
+                message="'var' has function-scoped hoisting — prefer 'let' or 'const'.",
+                line=idx, symbol="var",
+            ))
+
+        if console_re.search(stripped) and not is_test_file:
+            findings.append(DiagnosticItem(
+                severity="warning", kind="console_in_production",
+                message="console.log in non-test file — consider removing or using a logger.",
+                line=idx, symbol="console",
+            ))
+
+        # --- TS-specific Findings ---
+        if any_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="any_type",
+                message="'any' type bypasses type checking — prefer explicit types or 'unknown'.",
+                line=idx, symbol="any",
+            ))
+
+        if ts_ignore_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="ts_ignore",
+                message="@ts-ignore suppresses type checking — fix the underlying type error instead.",
+                line=idx, symbol="ts-ignore",
+            ))
+
+    # Callback hell check
+    if callback_nesting > max_callback_nesting:
+        max_callback_nesting = callback_nesting
+    if max_callback_nesting >= 3:
+        findings.append(DiagnosticItem(
+            severity="warning", kind="callback_hell",
+            message=f"{max_callback_nesting} nested callbacks detected — consider refactoring to async/await.",
+            line=0, symbol="callback",
+        ))
+
+    # Close last function
+    if in_func and cur_func_name:
+        func_clusters.append(_build_ts_cluster(
+            cur_func_name, cur_func_start, len(lines),
+            cur_func_counts, cur_func_events, text,
+        ))
+
+    # Variable overwrite detection
+    for name, hit_lines in var_assignments.items():
+        if len(hit_lines) >= 5 and name not in ("_", "i", "j", "k", "n", "idx"):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="repeated_overwrite",
+                message=f"Variable '{name}' is assigned {len(hit_lines)} times. May hide effective computation path.",
+                line=hit_lines[0], symbol=name,
+            ))
+
+    # --- JS Strengths ---
+    if module_counts["async_await"] > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="async_await_usage",
+            message=f"{module_counts['async_await']} async/await usage(s) for readable asynchronous code.",
+            line=0, symbol="async",
+        ))
+
+    destructure_count = sum(1 for line in lines if destructure_re.search(line))
+    if destructure_count > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="destructuring",
+            message=f"{destructure_count} destructuring assignment(s) for concise data extraction.",
+            line=0, symbol="destructure",
+        ))
+
+    if module_counts["arrow_fn"] > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="arrow_functions",
+            message=f"{module_counts['arrow_fn']} arrow function(s) for concise function expressions.",
+            line=0, symbol="arrow",
+        ))
+
+    # --- TS Strengths ---
+    if module_counts["type_annotation"] > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="explicit_types",
+            message=f"{module_counts['type_annotation']} explicit type annotation(s) for type safety.",
+            line=0, symbol="type_annotation",
+        ))
+
+    if module_counts["generic"] > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="generic_usage",
+            message=f"{module_counts['generic']} generic type usage(s) for reusable typed abstractions.",
+            line=0, symbol="generic",
+        ))
+
+    if module_counts["interface"] > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="interface_definitions",
+            message=f"{module_counts['interface']} interface definition(s) for structural type contracts.",
+            line=0, symbol="interface",
+        ))
+
+    # Module-level entropy
+    entropy = _shannon_entropy(module_counts)
+    n_lines = max(len(lines), 1)
+
+    return {
+        "language": "typescript",
+        "source_file": str(path),
+        "findings": [item.to_dict() for item in findings],
+        "strengths": [item.to_dict() for item in strengths],
+        "entropy_clusters": [
+            {
+                "scope": "module",
+                "name": "<module>",
+                "cluster": _entropy_bucket(entropy),
+                "entropy": round(entropy, 4),
+                "dominant_signal": _dominant_signal(module_counts),
+                "logic_labels": _logic_labels("<module>", text, module_counts, "typescript"),
+                "counts": dict(module_counts),
+                "modular_flow": _modular_flow_profile(event_lines, 1, n_lines),
+            },
+            *func_clusters,
+        ],
+    }
+
+
+# ===================================================================
+#  Java Analyzer
+# ===================================================================
+
+def _build_java_cluster(
+    name: str, start: int, end: int,
+    counts: dict[str, int], event_lines: list[int], full_text: str,
+) -> dict[str, object]:
+    """Build an entropy cluster for a Java method."""
+    entropy = _shannon_entropy(counts)
+    text_lines = full_text.splitlines()
+    func_text = "\n".join(text_lines[start - 1:end]) if start > 0 else ""
+    return {
+        "scope": "function",
+        "name": name,
+        "cluster": _entropy_bucket(entropy),
+        "entropy": round(entropy, 4),
+        "dominant_signal": _dominant_signal(counts),
+        "logic_labels": _logic_labels(name, func_text, counts, "java"),
+        "counts": dict(counts),
+        "line": start,
+        "modular_flow": _modular_flow_profile(event_lines, start, end),
+    }
+
+
+def _diagnose_java(path: str | Path, text: str) -> dict[str, object]:
+    """Diagnose Java source via regex pattern matching (no AST required)."""
+    findings: list[DiagnosticItem] = []
+    strengths: list[DiagnosticItem] = []
+    lines = text.splitlines()
+    event_lines: list[int] = []
+
+    func_clusters: list[dict[str, object]] = []
+    module_counts: dict[str, int] = {
+        "assign": 0, "call": 0, "if": 0, "loop": 0,
+        "return": 0, "switch": 0, "try_catch": 0, "throw": 0,
+        "annotation": 0, "synchronized": 0,
+    }
+
+    # Regex patterns for Java
+    # Method: access modifier + optional static/abstract/final + return type + method name(
+    method_re = re.compile(
+        r"^\s*(?:(?:public|protected|private)\s+)?(?:(?:static|abstract|final|synchronized|native)\s+)*"
+        r"(?:\w+(?:<[^>]*>)?(?:\[\])*)\s+(\w+)\s*\("
+    )
+    assign_re = re.compile(r"(?:(?:\w+(?:<[^>]*>)?(?:\[\])*)\s+\w+\s*=|[^=!<>]=[^=])")
+    call_re = re.compile(r"\w+\s*\(")
+    if_re = re.compile(r"^\s*(?:if\s*\(|else\s+if\s*\()")
+    loop_re = re.compile(r"^\s*(?:for\s*\(|while\s*\(|do\s*\{)")
+    return_re = re.compile(r"^\s*return[\s;]")
+    switch_re = re.compile(r"^\s*switch\s*\(")
+    try_re = re.compile(r"^\s*try\s*[\({]")
+    catch_re = re.compile(r"^\s*\}\s*catch\s*\(")
+    throw_re = re.compile(r"^\s*throw\s+")
+    annotation_re = re.compile(r"^\s*@(\w+)")
+    synchronized_re = re.compile(r"\bsynchronized\s*[\({]")
+    system_exit_re = re.compile(r"System\.exit\s*\(")
+    thread_sleep_re = re.compile(r"Thread\.sleep\s*\(")
+    override_re = re.compile(r"^\s*@Override\b")
+    try_with_resources_re = re.compile(r"^\s*try\s*\(")
+
+    # Empty catch detection: "} catch (...) {" followed by "}" with only whitespace/comments
+    # We track catch lines and check if the block is empty
+
+    # Variable overwrite tracking
+    var_assignments: dict[str, list[int]] = {}
+    var_assign_re = re.compile(r"^\s*(?:(?:\w+(?:<[^>]*>)?(?:\[\])*)\s+)?(\w+)\s*=\s*")
+
+    # Current function tracking
+    cur_func_name = ""
+    cur_func_start = 0
+    cur_func_counts: dict[str, int] = {}
+    cur_func_events: list[int] = []
+    in_func = False
+
+    is_test_file = bool(re.search(r"[Tt]est", str(path)))
+
+    # Track catch blocks for empty-catch detection
+    catch_lines: list[int] = []
+
+    for idx, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("//") or stripped.startswith("*") or stripped.startswith("/*"):
+            continue
+
+        # Detect method boundaries
+        fm = method_re.match(line)
+        if fm:
+            method_name = fm.group(1)
+            # Exclude class/constructor-like matches (name starts with uppercase and matches class decl)
+            if method_name and method_name not in ("if", "for", "while", "switch", "return", "new", "class"):
+                if in_func and cur_func_name:
+                    func_clusters.append(_build_java_cluster(
+                        cur_func_name, cur_func_start, idx - 1,
+                        cur_func_counts, cur_func_events, text,
+                    ))
+                cur_func_name = method_name
+                cur_func_start = idx
+                cur_func_counts = {k: 0 for k in module_counts}
+                cur_func_events = []
+                in_func = True
+
+        # --- Count patterns ---
+        if assign_re.search(stripped):
+            module_counts["assign"] += 1
+            if in_func:
+                cur_func_counts["assign"] = cur_func_counts.get("assign", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+            vm = var_assign_re.match(stripped)
+            if vm:
+                var_assignments.setdefault(vm.group(1), []).append(idx)
+
+        if call_re.search(stripped):
+            module_counts["call"] += 1
+            if in_func:
+                cur_func_counts["call"] = cur_func_counts.get("call", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if if_re.match(stripped):
+            module_counts["if"] += 1
+            if in_func:
+                cur_func_counts["if"] = cur_func_counts.get("if", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if loop_re.match(stripped):
+            module_counts["loop"] += 1
+            if in_func:
+                cur_func_counts["loop"] = cur_func_counts.get("loop", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if return_re.match(stripped):
+            module_counts["return"] += 1
+            if in_func:
+                cur_func_counts["return"] = cur_func_counts.get("return", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if switch_re.match(stripped):
+            module_counts["switch"] += 1
+            if in_func:
+                cur_func_counts["switch"] = cur_func_counts.get("switch", 0) + 1
+
+        if try_re.match(stripped) or catch_re.match(stripped):
+            module_counts["try_catch"] += 1
+            if in_func:
+                cur_func_counts["try_catch"] = cur_func_counts.get("try_catch", 0) + 1
+
+        if catch_re.match(stripped):
+            catch_lines.append(idx)
+
+        if throw_re.match(stripped):
+            module_counts["throw"] += 1
+            if in_func:
+                cur_func_counts["throw"] = cur_func_counts.get("throw", 0) + 1
+
+        am = annotation_re.match(stripped)
+        if am:
+            module_counts["annotation"] += 1
+            if in_func:
+                cur_func_counts["annotation"] = cur_func_counts.get("annotation", 0) + 1
+
+        if synchronized_re.search(stripped):
+            module_counts["synchronized"] += 1
+            if in_func:
+                cur_func_counts["synchronized"] = cur_func_counts.get("synchronized", 0) + 1
+
+        # --- Findings ---
+        if system_exit_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="system_exit",
+                message="System.exit() terminates JVM — prefer throwing an exception.",
+                line=idx, symbol="System.exit",
+            ))
+
+        if thread_sleep_re.search(stripped) and not is_test_file:
+            findings.append(DiagnosticItem(
+                severity="warning", kind="thread_sleep",
+                message="Thread.sleep() in non-test code — consider ScheduledExecutorService or async patterns.",
+                line=idx, symbol="Thread.sleep",
+            ))
+
+    # Empty catch block detection
+    for catch_line in catch_lines:
+        # Look at the lines after the catch to see if the block is empty
+        # Pattern: catch line contains "{", next non-blank line is "}"
+        block_start = catch_line
+        found_content = False
+        for scan_idx in range(catch_line, min(catch_line + 5, len(lines))):
+            scan_stripped = lines[scan_idx].strip() if scan_idx < len(lines) else ""
+            # Skip the catch line itself and blank lines
+            if scan_idx == catch_line - 1:
+                continue
+            if not scan_stripped or scan_stripped.startswith("//"):
+                continue
+            if scan_stripped == "}":
+                # Empty catch block
+                if not found_content:
+                    findings.append(DiagnosticItem(
+                        severity="warning", kind="empty_catch",
+                        message="Empty catch block swallows exception — at minimum log the error.",
+                        line=catch_line, symbol="catch",
+                    ))
+                break
+            found_content = True
+
+    # Close last function
+    if in_func and cur_func_name:
+        func_clusters.append(_build_java_cluster(
+            cur_func_name, cur_func_start, len(lines),
+            cur_func_counts, cur_func_events, text,
+        ))
+
+    # Variable overwrite detection
+    for name, hit_lines in var_assignments.items():
+        if len(hit_lines) >= 5 and name not in ("_", "i", "j", "k", "n", "idx"):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="repeated_overwrite",
+                message=f"Variable '{name}' is assigned {len(hit_lines)} times. May hide effective computation path.",
+                line=hit_lines[0], symbol=name,
+            ))
+
+    # Strengths
+    override_count = sum(1 for line in lines if override_re.search(line))
+    if override_count > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="override_annotations",
+            message=f"{override_count} @Override annotation(s) for compile-time method contract verification.",
+            line=0, symbol="@Override",
+        ))
+
+    try_resources_count = sum(1 for line in lines if try_with_resources_re.search(line))
+    if try_resources_count > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="try_with_resources",
+            message=f"{try_resources_count} try-with-resources statement(s) for automatic resource cleanup.",
+            line=0, symbol="try-with-resources",
+        ))
+
+    if module_counts["synchronized"] > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="synchronized_blocks",
+            message=f"{module_counts['synchronized']} synchronized block(s) for thread-safe access.",
+            line=0, symbol="synchronized",
+        ))
+
+    # Module-level entropy
+    entropy = _shannon_entropy(module_counts)
+    n_lines = max(len(lines), 1)
+
+    return {
+        "language": "java",
+        "source_file": str(path),
+        "findings": [item.to_dict() for item in findings],
+        "strengths": [item.to_dict() for item in strengths],
+        "entropy_clusters": [
+            {
+                "scope": "module",
+                "name": "<module>",
+                "cluster": _entropy_bucket(entropy),
+                "entropy": round(entropy, 4),
+                "dominant_signal": _dominant_signal(module_counts),
+                "logic_labels": _logic_labels("<module>", text, module_counts, "java"),
+                "counts": dict(module_counts),
+                "modular_flow": _modular_flow_profile(event_lines, 1, n_lines),
+            },
+            *func_clusters,
+        ],
+    }
+
+
+def _build_func_cluster(
+    name: str, start: int, end: int,
+    counts: dict[str, int], event_lines: list[int],
+    full_text: str, language: str,
+) -> dict[str, object]:
+    entropy = _shannon_entropy(counts)
+    text_lines = full_text.splitlines()
+    func_text = "\n".join(text_lines[start - 1:end]) if start > 0 else ""
+    return {
+        "scope": "function",
+        "name": name,
+        "cluster": _entropy_bucket(entropy),
+        "entropy": round(entropy, 4),
+        "dominant_signal": _dominant_signal(counts),
+        "logic_labels": _logic_labels(name, func_text, counts, language),
+        "counts": dict(counts),
+        "line": start,
+        "modular_flow": _modular_flow_profile(event_lines, start, end),
+    }
+
+
+# ===================================================================
+# 1. Zig analyzer
+# ===================================================================
+
+def _build_zig_cluster(
+    name: str, start: int, end: int,
+    counts: dict[str, int], event_lines: list[int], full_text: str,
+) -> dict[str, object]:
+    return _build_func_cluster(name, start, end, counts, event_lines, full_text, "zig")
+
+
+def _diagnose_zig(path: str | Path, text: str) -> dict[str, object]:
+    """Diagnose Zig source via regex pattern matching."""
+    findings: list[DiagnosticItem] = []
+    strengths: list[DiagnosticItem] = []
+    lines = text.splitlines()
+    event_lines: list[int] = []
+
+    func_clusters: list[dict[str, object]] = []
+    module_counts: dict[str, int] = {
+        "assign": 0, "call": 0, "if": 0, "loop": 0,
+        "return": 0, "defer": 0, "comptime": 0,
+        "error_union": 0, "test_block": 0,
+    }
+
+    func_re = re.compile(r"^\s*(?:pub\s+)?fn\s+(\w+)\s*\(")
+    assign_re = re.compile(r"(?:const|var)\s+\w+\s*=|[^=!<>]=[^=]")
+    call_re = re.compile(r"\w+\s*\(")
+    if_re = re.compile(r"^\s*if\s*\(")
+    loop_re = re.compile(r"^\s*(?:while|for)\s*[\(\|]")
+    return_re = re.compile(r"^\s*return\s")
+    defer_re = re.compile(r"^\s*(?:defer|errdefer)\s")
+    comptime_re = re.compile(r"\bcomptime\b")
+    error_union_re = re.compile(r"!\w+|!\{")
+    test_re = re.compile(r'^\s*test\s+"')
+    panic_re = re.compile(r"@panic\(")
+    unreachable_re = re.compile(r"\bunreachable\b")
+
+    cur_func_name = ""
+    cur_func_start = 0
+    cur_func_counts: dict[str, int] = {}
+    cur_func_events: list[int] = []
+    in_func = False
+    brace_depth = 0
+
+    for idx, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("//"):
+            continue
+
+        brace_depth += stripped.count("{") - stripped.count("}")
+
+        fm = func_re.match(stripped)
+        if fm:
+            if in_func and cur_func_name:
+                func_clusters.append(_build_zig_cluster(
+                    cur_func_name, cur_func_start, idx - 1,
+                    cur_func_counts, cur_func_events, text,
+                ))
+            cur_func_name = fm.group(1)
+            cur_func_start = idx
+            cur_func_counts = {k: 0 for k in module_counts}
+            cur_func_events = []
+            in_func = True
+            continue
+
+        if assign_re.search(stripped):
+            module_counts["assign"] += 1
+            if in_func:
+                cur_func_counts["assign"] = cur_func_counts.get("assign", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if call_re.search(stripped) and not stripped.startswith("fn ") and not stripped.startswith("pub fn "):
+            module_counts["call"] += 1
+            if in_func:
+                cur_func_counts["call"] = cur_func_counts.get("call", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if if_re.match(stripped):
+            module_counts["if"] += 1
+            if in_func:
+                cur_func_counts["if"] = cur_func_counts.get("if", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if loop_re.match(stripped):
+            module_counts["loop"] += 1
+            if in_func:
+                cur_func_counts["loop"] = cur_func_counts.get("loop", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if return_re.match(stripped):
+            module_counts["return"] += 1
+            if in_func:
+                cur_func_counts["return"] = cur_func_counts.get("return", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if defer_re.match(stripped):
+            module_counts["defer"] += 1
+            if in_func:
+                cur_func_counts["defer"] = cur_func_counts.get("defer", 0) + 1
+
+        if comptime_re.search(stripped):
+            module_counts["comptime"] += 1
+            if in_func:
+                cur_func_counts["comptime"] = cur_func_counts.get("comptime", 0) + 1
+
+        if error_union_re.search(stripped):
+            module_counts["error_union"] += 1
+            if in_func:
+                cur_func_counts["error_union"] = cur_func_counts.get("error_union", 0) + 1
+
+        if test_re.match(stripped):
+            module_counts["test_block"] += 1
+
+        # Findings
+        if panic_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="panic_call",
+                message="@panic() found — consider returning an error instead.",
+                line=idx, symbol="@panic",
+            ))
+        if unreachable_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="unreachable",
+                message="'unreachable' found — will crash at runtime if reached.",
+                line=idx, symbol="unreachable",
+            ))
+
+    # Close last function
+    if in_func and cur_func_name:
+        func_clusters.append(_build_zig_cluster(
+            cur_func_name, cur_func_start, len(lines),
+            cur_func_counts, cur_func_events, text,
+        ))
+
+    # Strengths
+    if module_counts["defer"] > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="defer_cleanup",
+            message=f"{module_counts['defer']} defer/errdefer statement(s) for resource cleanup.",
+            line=0, symbol="defer",
+        ))
+    if module_counts["comptime"] > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="comptime_evaluation",
+            message=f"{module_counts['comptime']} comptime usage(s) for compile-time evaluation.",
+            line=0, symbol="comptime",
+        ))
+    if module_counts["error_union"] > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="error_unions",
+            message=f"{module_counts['error_union']} error union(s) for explicit error handling.",
+            line=0, symbol="error_union",
+        ))
+
+    entropy = _shannon_entropy(module_counts)
+    n_lines = max(len(lines), 1)
+
+    return {
+        "language": "zig",
+        "source_file": str(path),
+        "findings": [item.to_dict() for item in findings],
+        "strengths": [item.to_dict() for item in strengths],
+        "entropy_clusters": [
+            {
+                "scope": "module",
+                "name": "<module>",
+                "cluster": _entropy_bucket(entropy),
+                "entropy": round(entropy, 4),
+                "dominant_signal": _dominant_signal(module_counts),
+                "logic_labels": _logic_labels("<module>", text, module_counts, "zig"),
+                "counts": dict(module_counts),
+                "modular_flow": _modular_flow_profile(event_lines, 1, n_lines),
+            },
+            *func_clusters,
+        ],
+    }
+
+
+# ===================================================================
+# 2. C++ analyzer
+# ===================================================================
+
+def _build_cpp_cluster(
+    name: str, start: int, end: int,
+    counts: dict[str, int], event_lines: list[int], full_text: str,
+) -> dict[str, object]:
+    return _build_func_cluster(name, start, end, counts, event_lines, full_text, "cpp")
+
+
+def _diagnose_cpp(path: str | Path, text: str) -> dict[str, object]:
+    """Diagnose C++ source via regex pattern matching."""
+    findings: list[DiagnosticItem] = []
+    strengths: list[DiagnosticItem] = []
+    lines = text.splitlines()
+    event_lines: list[int] = []
+
+    func_clusters: list[dict[str, object]] = []
+    module_counts: dict[str, int] = {
+        "assign": 0, "call": 0, "if": 0, "loop": 0,
+        "return": 0, "switch": 0, "template": 0,
+        "class_def": 0, "destructor": 0, "virtual": 0, "throw": 0,
+    }
+
+    # Function: return_type name( or Class::method(
+    func_re = re.compile(
+        r"^\s*(?:(?:static|inline|virtual|explicit|constexpr|const|unsigned|signed|long|short)\s+)*"
+        r"(?:\w[\w:<>*&\s]*?)\s+(\w+)\s*\("
+    )
+    method_re = re.compile(r"^\s*(?:\w[\w:<>*&\s]*?)\s+(\w+::\w+)\s*\(")
+    assign_re = re.compile(r"(?:[^=!<>]=[^=])|(?:\w+\s*(?:\+=|-=|\*=|/=|%=|&=|\|=|\^=|<<=|>>=))")
+    call_re = re.compile(r"\w+\s*\(")
+    if_re = re.compile(r"^\s*(?:if|else\s+if)\s*\(")
+    loop_re = re.compile(r"^\s*(?:for|while|do)\s*[\({]")
+    return_re = re.compile(r"^\s*return\s")
+    switch_re = re.compile(r"^\s*switch\s*\(")
+    template_re = re.compile(r"^\s*template\s*<")
+    class_re = re.compile(r"^\s*(?:class|struct)\s+(\w+)")
+    destructor_re = re.compile(r"~\w+\s*\(")
+    virtual_re = re.compile(r"\bvirtual\b")
+    throw_re = re.compile(r"\bthrow\b")
+    new_re = re.compile(r"\bnew\s+\w")
+    delete_re = re.compile(r"\bdelete\s")
+    goto_re = re.compile(r"\bgoto\s+\w")
+    reinterpret_re = re.compile(r"\breinterpret_cast\b")
+    smart_ptr_re = re.compile(r"\b(?:unique_ptr|shared_ptr|make_unique|make_shared)\b")
+    const_re = re.compile(r"\bconst\b")
+    override_re = re.compile(r"\boverride\b")
+
+    cur_func_name = ""
+    cur_func_start = 0
+    cur_func_counts: dict[str, int] = {}
+    cur_func_events: list[int] = []
+    in_func = False
+
+    has_smart_ptr = False
+    has_const = False
+    has_override = False
+    has_destructor = False
+
+    for idx, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("//") or stripped.startswith("/*") or stripped.startswith("*"):
+            continue
+
+        # Detect function boundaries
+        fm = method_re.match(stripped) or func_re.match(stripped)
+        if fm and "{" in stripped:
+            if in_func and cur_func_name:
+                func_clusters.append(_build_cpp_cluster(
+                    cur_func_name, cur_func_start, idx - 1,
+                    cur_func_counts, cur_func_events, text,
+                ))
+            cur_func_name = fm.group(1)
+            cur_func_start = idx
+            cur_func_counts = {k: 0 for k in module_counts}
+            cur_func_events = []
+            in_func = True
+
+        # Count patterns
+        if assign_re.search(stripped):
+            module_counts["assign"] += 1
+            if in_func:
+                cur_func_counts["assign"] = cur_func_counts.get("assign", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if call_re.search(stripped) and not stripped.startswith("if") and not stripped.startswith("for"):
+            module_counts["call"] += 1
+            if in_func:
+                cur_func_counts["call"] = cur_func_counts.get("call", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if if_re.match(stripped):
+            module_counts["if"] += 1
+            if in_func:
+                cur_func_counts["if"] = cur_func_counts.get("if", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if loop_re.match(stripped):
+            module_counts["loop"] += 1
+            if in_func:
+                cur_func_counts["loop"] = cur_func_counts.get("loop", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if return_re.match(stripped):
+            module_counts["return"] += 1
+            if in_func:
+                cur_func_counts["return"] = cur_func_counts.get("return", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if switch_re.match(stripped):
+            module_counts["switch"] += 1
+            if in_func:
+                cur_func_counts["switch"] = cur_func_counts.get("switch", 0) + 1
+
+        if template_re.match(stripped):
+            module_counts["template"] += 1
+            if in_func:
+                cur_func_counts["template"] = cur_func_counts.get("template", 0) + 1
+
+        if class_re.match(stripped):
+            module_counts["class_def"] += 1
+
+        if destructor_re.search(stripped):
+            module_counts["destructor"] += 1
+            has_destructor = True
+
+        if virtual_re.search(stripped):
+            module_counts["virtual"] += 1
+
+        if throw_re.search(stripped):
+            module_counts["throw"] += 1
+            if in_func:
+                cur_func_counts["throw"] = cur_func_counts.get("throw", 0) + 1
+
+        # Findings
+        if new_re.search(stripped) and not smart_ptr_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="raw_new",
+                message="Raw 'new' detected — prefer smart pointers (unique_ptr/shared_ptr).",
+                line=idx, symbol="new",
+            ))
+        if delete_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="raw_delete",
+                message="Raw 'delete' detected — prefer smart pointers for automatic cleanup.",
+                line=idx, symbol="delete",
+            ))
+        if goto_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="goto_usage",
+                message="'goto' found — consider structured control flow.",
+                line=idx, symbol="goto",
+            ))
+        if reinterpret_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="reinterpret_cast",
+                message="reinterpret_cast found — bypasses type safety.",
+                line=idx, symbol="reinterpret_cast",
+            ))
+
+        # Track strengths
+        if smart_ptr_re.search(stripped):
+            has_smart_ptr = True
+        if const_re.search(stripped):
+            has_const = True
+        if override_re.search(stripped):
+            has_override = True
+
+    # Close last function
+    if in_func and cur_func_name:
+        func_clusters.append(_build_cpp_cluster(
+            cur_func_name, cur_func_start, len(lines),
+            cur_func_counts, cur_func_events, text,
+        ))
+
+    # Strengths
+    if has_destructor:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="raii_destructor",
+            message="Destructor(s) found — RAII pattern for resource management.",
+            line=0, symbol="destructor",
+        ))
+    if has_smart_ptr:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="smart_pointers",
+            message="Smart pointers (unique_ptr/shared_ptr) used for memory safety.",
+            line=0, symbol="smart_ptr",
+        ))
+    if has_const:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="const_usage",
+            message="'const' qualifiers used for immutability.",
+            line=0, symbol="const",
+        ))
+    if has_override:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="override_usage",
+            message="'override' keyword used for virtual method safety.",
+            line=0, symbol="override",
+        ))
+
+    entropy = _shannon_entropy(module_counts)
+    n_lines = max(len(lines), 1)
+
+    return {
+        "language": "cpp",
+        "source_file": str(path),
+        "findings": [item.to_dict() for item in findings],
+        "strengths": [item.to_dict() for item in strengths],
+        "entropy_clusters": [
+            {
+                "scope": "module",
+                "name": "<module>",
+                "cluster": _entropy_bucket(entropy),
+                "entropy": round(entropy, 4),
+                "dominant_signal": _dominant_signal(module_counts),
+                "logic_labels": _logic_labels("<module>", text, module_counts, "cpp"),
+                "counts": dict(module_counts),
+                "modular_flow": _modular_flow_profile(event_lines, 1, n_lines),
+            },
+            *func_clusters,
+        ],
+    }
+
+
+# ===================================================================
+# 3. YAML analyzer
+# ===================================================================
+
+def _diagnose_yaml(path: str | Path, text: str) -> dict[str, object]:
+    """Diagnose YAML files via regex pattern matching."""
+    findings: list[DiagnosticItem] = []
+    strengths: list[DiagnosticItem] = []
+    lines = text.splitlines()
+    event_lines: list[int] = []
+
+    counts: dict[str, int] = {
+        "mapping": 0, "sequence": 0, "scalar": 0,
+        "anchor": 0, "comment": 0, "nested_depth": 0,
+    }
+
+    anchor_re = re.compile(r"&(\w+)")
+    alias_re = re.compile(r"\*(\w+)")
+    comment_re = re.compile(r"^\s*#|(?<=\s)#")
+    mapping_re = re.compile(r"^\s*[\w\-_.]+\s*:")
+    sequence_re = re.compile(r"^\s*-\s")
+
+    anchors_defined: set[str] = set()
+    aliases_used: set[str] = set()
+    max_depth = 0
+
+    for idx, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+
+        # Calculate indentation depth (assume 2-space indent)
+        indent = len(line) - len(line.lstrip())
+        depth = indent // 2
+        if depth > max_depth:
+            max_depth = depth
+
+        if comment_re.search(line):
+            counts["comment"] += 1
+
+        if mapping_re.match(line):
+            counts["mapping"] += 1
+            event_lines.append(idx)
+
+        if sequence_re.match(line):
+            counts["sequence"] += 1
+            event_lines.append(idx)
+
+        # Scalar: a line that is a mapping value (after :) or sequence item
+        stripped = line.strip()
+        if ":" in stripped and not stripped.endswith(":") and not stripped.startswith("#"):
+            counts["scalar"] += 1
+
+        am = anchor_re.search(line)
+        if am:
+            counts["anchor"] += 1
+            anchors_defined.add(am.group(1))
+
+        alm = alias_re.search(line)
+        if alm:
+            aliases_used.add(alm.group(1))
+
+        # Very long lines
+        if len(line) > 200:
+            findings.append(DiagnosticItem(
+                severity="warning", kind="long_line",
+                message=f"Line exceeds 200 characters ({len(line)} chars) — may reduce readability.",
+                line=idx, symbol="long_line",
+            ))
+
+    counts["nested_depth"] = max_depth
+
+    # Findings
+    if max_depth > 6:
+        findings.append(DiagnosticItem(
+            severity="warning", kind="deep_nesting",
+            message=f"Deeply nested structure (depth {max_depth} > 6) — consider flattening.",
+            line=0, symbol="nesting",
+        ))
+
+    orphan_anchors = anchors_defined - aliases_used
+    if orphan_anchors:
+        findings.append(DiagnosticItem(
+            severity="warning", kind="orphan_anchors",
+            message=f"Anchor(s) defined but never referenced: {', '.join(sorted(orphan_anchors))}.",
+            line=0, symbol="anchor",
+        ))
+
+    # Strengths
+    if counts["comment"] > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="comments_present",
+            message=f"{counts['comment']} comment(s) found — improves maintainability.",
+            line=0, symbol="comment",
+        ))
+    if anchors_defined and aliases_used:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="anchors_for_dry",
+            message="YAML anchors and aliases used for DRY configuration.",
+            line=0, symbol="anchor",
+        ))
+
+    entropy = _shannon_entropy(counts)
+    n_lines = max(len(lines), 1)
+
+    return {
+        "language": "yaml",
+        "source_file": str(path),
+        "findings": [item.to_dict() for item in findings],
+        "strengths": [item.to_dict() for item in strengths],
+        "entropy_clusters": [
+            {
+                "scope": "module",
+                "name": "<module>",
+                "cluster": _entropy_bucket(entropy),
+                "entropy": round(entropy, 4),
+                "dominant_signal": _dominant_signal(counts),
+                "logic_labels": _logic_labels("<module>", text, counts, "yaml"),
+                "counts": counts,
+                "modular_flow": _modular_flow_profile(event_lines, 1, n_lines),
+            },
+        ],
+    }
+
+
+# ===================================================================
+# 4. SQL analyzer
+# ===================================================================
+
+def _diagnose_sql(path: str | Path, text: str) -> dict[str, object]:
+    """Diagnose SQL files via regex pattern matching."""
+    findings: list[DiagnosticItem] = []
+    strengths: list[DiagnosticItem] = []
+    lines = text.splitlines()
+    event_lines: list[int] = []
+
+    counts: dict[str, int] = {
+        "select": 0, "insert": 0, "update": 0, "delete": 0,
+        "join": 0, "subquery": 0, "create": 0, "alter": 0,
+        "drop": 0, "transaction": 0,
+    }
+
+    select_re = re.compile(r"\bSELECT\b", re.IGNORECASE)
+    select_star_re = re.compile(r"\bSELECT\s+\*", re.IGNORECASE)
+    insert_re = re.compile(r"\bINSERT\s+INTO\b", re.IGNORECASE)
+    update_re = re.compile(r"\bUPDATE\b", re.IGNORECASE)
+    delete_re = re.compile(r"\bDELETE\s+FROM\b", re.IGNORECASE)
+    join_re = re.compile(r"\bJOIN\b", re.IGNORECASE)
+    create_re = re.compile(r"\bCREATE\s+(?:TABLE|INDEX|VIEW|FUNCTION|PROCEDURE)\b", re.IGNORECASE)
+    alter_re = re.compile(r"\bALTER\s+TABLE\b", re.IGNORECASE)
+    drop_re = re.compile(r"\bDROP\s+TABLE\b", re.IGNORECASE)
+    transaction_re = re.compile(r"\b(?:BEGIN|COMMIT|ROLLBACK|START\s+TRANSACTION)\b", re.IGNORECASE)
+    param_re = re.compile(r"\$\d+|\?")
+    where_re = re.compile(r"\bWHERE\b", re.IGNORECASE)
+
+    # Track subquery nesting
+    full_text_upper = text.upper()
+    max_subquery_depth = 0
+
+    for idx, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("--"):
+            continue
+
+        if select_re.search(stripped):
+            counts["select"] += 1
+            event_lines.append(idx)
+        if insert_re.search(stripped):
+            counts["insert"] += 1
+            event_lines.append(idx)
+        if update_re.search(stripped):
+            counts["update"] += 1
+            event_lines.append(idx)
+        if delete_re.search(stripped):
+            counts["delete"] += 1
+            event_lines.append(idx)
+        if join_re.search(stripped):
+            counts["join"] += 1
+            event_lines.append(idx)
+        if create_re.search(stripped):
+            counts["create"] += 1
+            event_lines.append(idx)
+        if alter_re.search(stripped):
+            counts["alter"] += 1
+            event_lines.append(idx)
+        if drop_re.search(stripped):
+            counts["drop"] += 1
+            event_lines.append(idx)
+        if transaction_re.search(stripped):
+            counts["transaction"] += 1
+
+        # Findings
+        if select_star_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="select_star",
+                message="SELECT * found — prefer explicit column lists for clarity and performance.",
+                line=idx, symbol="SELECT *",
+            ))
+        if drop_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="drop_table",
+                message="DROP TABLE found — destructive operation, ensure this is intentional.",
+                line=idx, symbol="DROP TABLE",
+            ))
+        if delete_re.search(stripped) and not where_re.search(stripped):
+            # Check if WHERE is on the next few lines (multi-line DELETE)
+            context = "\n".join(lines[idx - 1:min(idx + 3, len(lines))])
+            if not where_re.search(context):
+                findings.append(DiagnosticItem(
+                    severity="warning", kind="delete_without_where",
+                    message="DELETE without WHERE clause — will delete all rows.",
+                    line=idx, symbol="DELETE",
+                ))
+
+    # Count subqueries via parenthesized SELECT
+    subquery_re = re.compile(r"\(\s*SELECT\b", re.IGNORECASE)
+    for m in subquery_re.finditer(text):
+        counts["subquery"] += 1
+        # Count nesting depth at this position
+        prefix = text[:m.start()]
+        depth = prefix.count("(") - prefix.count(")")
+        if depth > max_subquery_depth:
+            max_subquery_depth = depth
+
+    if max_subquery_depth > 2:
+        findings.append(DiagnosticItem(
+            severity="warning", kind="deep_subquery",
+            message=f"Nested subqueries detected (depth > 2) — consider CTEs or temp tables.",
+            line=0, symbol="subquery",
+        ))
+
+    # Strengths
+    has_explicit_cols = False
+    explicit_col_re = re.compile(r"\bSELECT\s+(?![\s*])\w", re.IGNORECASE)
+    if explicit_col_re.search(text):
+        has_explicit_cols = True
+    if has_explicit_cols and counts["select"] > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="explicit_columns",
+            message="Explicit column lists used in SELECT statements.",
+            line=0, symbol="SELECT",
+        ))
+    if counts["transaction"] > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="transactions",
+            message=f"{counts['transaction']} transaction control statement(s) for data integrity.",
+            line=0, symbol="transaction",
+        ))
+    if param_re.search(text):
+        strengths.append(DiagnosticItem(
+            severity="info", kind="parameterized_queries",
+            message="Parameterized queries ($N or ?) used — helps prevent SQL injection.",
+            line=0, symbol="parameter",
+        ))
+
+    entropy = _shannon_entropy(counts)
+    n_lines = max(len(lines), 1)
+
+    return {
+        "language": "sql",
+        "source_file": str(path),
+        "findings": [item.to_dict() for item in findings],
+        "strengths": [item.to_dict() for item in strengths],
+        "entropy_clusters": [
+            {
+                "scope": "module",
+                "name": "<module>",
+                "cluster": _entropy_bucket(entropy),
+                "entropy": round(entropy, 4),
+                "dominant_signal": _dominant_signal(counts),
+                "logic_labels": _logic_labels("<module>", text, counts, "sql"),
+                "counts": counts,
+                "modular_flow": _modular_flow_profile(event_lines, 1, n_lines),
+            },
+        ],
+    }
+
+
+# ===================================================================
+# 5. Dockerfile analyzer
+# ===================================================================
+
+def _diagnose_dockerfile(path: str | Path, text: str) -> dict[str, object]:
+    """Diagnose Dockerfile via regex pattern matching."""
+    findings: list[DiagnosticItem] = []
+    strengths: list[DiagnosticItem] = []
+    lines = text.splitlines()
+    event_lines: list[int] = []
+
+    counts: dict[str, int] = {
+        "from_layer": 0, "run": 0, "copy": 0, "env": 0,
+        "expose": 0, "cmd": 0, "entrypoint": 0, "arg": 0,
+        "label": 0, "healthcheck": 0,
+    }
+
+    from_re = re.compile(r"^\s*FROM\s+", re.IGNORECASE)
+    from_tag_re = re.compile(r"^\s*FROM\s+(\S+)", re.IGNORECASE)
+    run_re = re.compile(r"^\s*RUN\s+", re.IGNORECASE)
+    copy_re = re.compile(r"^\s*(?:COPY|ADD)\s+", re.IGNORECASE)
+    env_re = re.compile(r"^\s*ENV\s+", re.IGNORECASE)
+    expose_re = re.compile(r"^\s*EXPOSE\s+", re.IGNORECASE)
+    cmd_re = re.compile(r"^\s*CMD\s+", re.IGNORECASE)
+    entrypoint_re = re.compile(r"^\s*ENTRYPOINT\s+", re.IGNORECASE)
+    arg_re = re.compile(r"^\s*ARG\s+", re.IGNORECASE)
+    label_re = re.compile(r"^\s*LABEL\s+", re.IGNORECASE)
+    healthcheck_re = re.compile(r"^\s*HEALTHCHECK\s+", re.IGNORECASE)
+    curl_bash_re = re.compile(r"curl\s+.*\|\s*(?:ba)?sh", re.IGNORECASE)
+
+    for idx, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        if from_re.match(stripped):
+            counts["from_layer"] += 1
+            event_lines.append(idx)
+            fm = from_tag_re.match(stripped)
+            if fm:
+                image = fm.group(1)
+                if image.endswith(":latest") or (":" not in image and "@" not in image):
+                    findings.append(DiagnosticItem(
+                        severity="warning", kind="from_latest",
+                        message=f"FROM uses 'latest' or untagged image '{image}' — pin a specific version.",
+                        line=idx, symbol=image,
+                    ))
+
+        if run_re.match(stripped):
+            counts["run"] += 1
+            event_lines.append(idx)
+            # Check for multiple commands not &&-chained
+            run_body = stripped[4:].strip()  # after "RUN "
+            if ";" in run_body and "&&" not in run_body:
+                findings.append(DiagnosticItem(
+                    severity="warning", kind="run_no_chain",
+                    message="RUN uses ';' without '&&' — failing commands will be silently ignored.",
+                    line=idx, symbol="RUN",
+                ))
+            if curl_bash_re.search(stripped):
+                findings.append(DiagnosticItem(
+                    severity="warning", kind="curl_pipe_bash",
+                    message="curl|bash pattern detected — downloads and executes untrusted code.",
+                    line=idx, symbol="curl|bash",
+                ))
+
+        if copy_re.match(stripped):
+            counts["copy"] += 1
+            event_lines.append(idx)
+        if env_re.match(stripped):
+            counts["env"] += 1
+            event_lines.append(idx)
+        if expose_re.match(stripped):
+            counts["expose"] += 1
+            event_lines.append(idx)
+        if cmd_re.match(stripped):
+            counts["cmd"] += 1
+            event_lines.append(idx)
+        if entrypoint_re.match(stripped):
+            counts["entrypoint"] += 1
+            event_lines.append(idx)
+        if arg_re.match(stripped):
+            counts["arg"] += 1
+            event_lines.append(idx)
+        if label_re.match(stripped):
+            counts["label"] += 1
+            event_lines.append(idx)
+        if healthcheck_re.match(stripped):
+            counts["healthcheck"] += 1
+            event_lines.append(idx)
+
+    # Findings
+    if counts["healthcheck"] == 0 and counts["from_layer"] > 0:
+        findings.append(DiagnosticItem(
+            severity="warning", kind="no_healthcheck",
+            message="No HEALTHCHECK instruction — container health cannot be monitored.",
+            line=0, symbol="HEALTHCHECK",
+        ))
+
+    # Strengths
+    if counts["from_layer"] >= 2:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="multi_stage_build",
+            message=f"{counts['from_layer']} FROM stages — multi-stage build reduces final image size.",
+            line=0, symbol="FROM",
+        ))
+    if counts["healthcheck"] > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="healthcheck_present",
+            message="HEALTHCHECK defined — enables container health monitoring.",
+            line=0, symbol="HEALTHCHECK",
+        ))
+    # Check for specific version tags
+    has_specific_tag = False
+    for line in lines:
+        fm = from_tag_re.match(line.strip())
+        if fm:
+            image = fm.group(1)
+            if ":" in image and not image.endswith(":latest"):
+                has_specific_tag = True
+                break
+    if has_specific_tag:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="specific_version_tags",
+            message="Specific version tags used in FROM — reproducible builds.",
+            line=0, symbol="FROM",
+        ))
+
+    entropy = _shannon_entropy(counts)
+    n_lines = max(len(lines), 1)
+
+    return {
+        "language": "dockerfile",
+        "source_file": str(path),
+        "findings": [item.to_dict() for item in findings],
+        "strengths": [item.to_dict() for item in strengths],
+        "entropy_clusters": [
+            {
+                "scope": "module",
+                "name": "<module>",
+                "cluster": _entropy_bucket(entropy),
+                "entropy": round(entropy, 4),
+                "dominant_signal": _dominant_signal(counts),
+                "logic_labels": _logic_labels("<module>", text, counts, "dockerfile"),
+                "counts": counts,
+                "modular_flow": _modular_flow_profile(event_lines, 1, n_lines),
+            },
+        ],
+    }
+
+
+# ===================================================================
+# 6. Ruby analyzer
+# ===================================================================
+
+def _build_ruby_cluster(
+    name: str, start: int, end: int,
+    counts: dict[str, int], event_lines: list[int], full_text: str,
+) -> dict[str, object]:
+    return _build_func_cluster(name, start, end, counts, event_lines, full_text, "ruby")
+
+
+def _diagnose_ruby(path: str | Path, text: str) -> dict[str, object]:
+    """Diagnose Ruby source via regex pattern matching."""
+    findings: list[DiagnosticItem] = []
+    strengths: list[DiagnosticItem] = []
+    lines = text.splitlines()
+    event_lines: list[int] = []
+
+    func_clusters: list[dict[str, object]] = []
+    module_counts: dict[str, int] = {
+        "assign": 0, "call": 0, "if": 0, "loop": 0,
+        "return": 0, "block": 0, "rescue": 0,
+        "class_def": 0, "module_def": 0, "yield": 0,
+    }
+
+    func_re = re.compile(r"^\s*def\s+(\w+[!?=]?)")
+    assign_re = re.compile(r"\w+\s*(?:=(?!=)|\+=|-=|\*=|/=|%=|\|\|=|&&=)")
+    call_re = re.compile(r"\w+[.(]\w")
+    if_re = re.compile(r"^\s*(?:if|elsif|unless)\s+")
+    loop_re = re.compile(r"^\s*(?:while|until|for|loop)\s")
+    return_re = re.compile(r"^\s*return\b")
+    block_re = re.compile(r"\bdo\b|\{.*\|")
+    rescue_re = re.compile(r"^\s*rescue\b")
+    class_re = re.compile(r"^\s*class\s+(\w+)")
+    module_re = re.compile(r"^\s*module\s+(\w+)")
+    yield_re = re.compile(r"\byield\b")
+    eval_re = re.compile(r"\beval\s*\(")
+    system_re = re.compile(r"\bsystem\s*\(")
+    rescue_exception_re = re.compile(r"rescue\s+Exception\b")
+    frozen_re = re.compile(r"#\s*frozen_string_literal:\s*true")
+    each_re = re.compile(r"\.\s*(?:each|map|select|reject|reduce|inject)\b")
+
+    cur_func_name = ""
+    cur_func_start = 0
+    cur_func_counts: dict[str, int] = {}
+    cur_func_events: list[int] = []
+    in_func = False
+
+    has_frozen = False
+    has_blocks = False
+    has_yield = False
+    has_explicit_rescue = False  # rescue with specific type (not Exception)
+
+    for idx, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            if frozen_re.search(stripped):
+                has_frozen = True
+            continue
+
+        fm = func_re.match(stripped)
+        if fm:
+            if in_func and cur_func_name:
+                func_clusters.append(_build_ruby_cluster(
+                    cur_func_name, cur_func_start, idx - 1,
+                    cur_func_counts, cur_func_events, text,
+                ))
+            cur_func_name = fm.group(1)
+            cur_func_start = idx
+            cur_func_counts = {k: 0 for k in module_counts}
+            cur_func_events = []
+            in_func = True
+            continue
+
+        if assign_re.search(stripped):
+            module_counts["assign"] += 1
+            if in_func:
+                cur_func_counts["assign"] = cur_func_counts.get("assign", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if call_re.search(stripped) or each_re.search(stripped):
+            module_counts["call"] += 1
+            if in_func:
+                cur_func_counts["call"] = cur_func_counts.get("call", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if if_re.match(stripped):
+            module_counts["if"] += 1
+            if in_func:
+                cur_func_counts["if"] = cur_func_counts.get("if", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if loop_re.match(stripped):
+            module_counts["loop"] += 1
+            if in_func:
+                cur_func_counts["loop"] = cur_func_counts.get("loop", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if return_re.match(stripped):
+            module_counts["return"] += 1
+            if in_func:
+                cur_func_counts["return"] = cur_func_counts.get("return", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if block_re.search(stripped):
+            module_counts["block"] += 1
+            has_blocks = True
+            if in_func:
+                cur_func_counts["block"] = cur_func_counts.get("block", 0) + 1
+
+        if rescue_re.match(stripped):
+            module_counts["rescue"] += 1
+            if in_func:
+                cur_func_counts["rescue"] = cur_func_counts.get("rescue", 0) + 1
+            # Check for overly broad rescue
+            if rescue_exception_re.search(stripped):
+                findings.append(DiagnosticItem(
+                    severity="warning", kind="rescue_exception",
+                    message="'rescue Exception' is too broad — catches system exceptions like SignalException.",
+                    line=idx, symbol="rescue",
+                ))
+            elif re.search(r"rescue\s+\w+", stripped):
+                has_explicit_rescue = True
+
+        if class_re.match(stripped):
+            module_counts["class_def"] += 1
+
+        if module_re.match(stripped):
+            module_counts["module_def"] += 1
+
+        if yield_re.search(stripped):
+            module_counts["yield"] += 1
+            has_yield = True
+            if in_func:
+                cur_func_counts["yield"] = cur_func_counts.get("yield", 0) + 1
+
+        # Findings
+        if eval_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="eval_usage",
+                message="eval() found — executes arbitrary code, potential security risk.",
+                line=idx, symbol="eval",
+            ))
+        if system_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="system_call",
+                message="system() found — ensure input is validated to prevent command injection.",
+                line=idx, symbol="system",
+            ))
+
+    # Close last function
+    if in_func and cur_func_name:
+        func_clusters.append(_build_ruby_cluster(
+            cur_func_name, cur_func_start, len(lines),
+            cur_func_counts, cur_func_events, text,
+        ))
+
+    # Strengths
+    if has_blocks or has_yield:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="blocks_and_yield",
+            message="Blocks and/or yield used — idiomatic Ruby for iteration and callbacks.",
+            line=0, symbol="block",
+        ))
+    if has_explicit_rescue:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="explicit_rescue_types",
+            message="Explicit rescue types used — targeted error handling.",
+            line=0, symbol="rescue",
+        ))
+    if has_frozen:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="frozen_string_literal",
+            message="frozen_string_literal pragma — reduces object allocations.",
+            line=0, symbol="frozen_string_literal",
+        ))
+
+    entropy = _shannon_entropy(module_counts)
+    n_lines = max(len(lines), 1)
+
+    return {
+        "language": "ruby",
+        "source_file": str(path),
+        "findings": [item.to_dict() for item in findings],
+        "strengths": [item.to_dict() for item in strengths],
+        "entropy_clusters": [
+            {
+                "scope": "module",
+                "name": "<module>",
+                "cluster": _entropy_bucket(entropy),
+                "entropy": round(entropy, 4),
+                "dominant_signal": _dominant_signal(module_counts),
+                "logic_labels": _logic_labels("<module>", text, module_counts, "ruby"),
+                "counts": dict(module_counts),
+                "modular_flow": _modular_flow_profile(event_lines, 1, n_lines),
+            },
+            *func_clusters,
+        ],
+    }
+
+
+# ===================================================================
+# 7. Lua analyzer
+# ===================================================================
+
+def _build_lua_cluster(
+    name: str, start: int, end: int,
+    counts: dict[str, int], event_lines: list[int], full_text: str,
+) -> dict[str, object]:
+    return _build_func_cluster(name, start, end, counts, event_lines, full_text, "lua")
+
+
+def _diagnose_lua(path: str | Path, text: str) -> dict[str, object]:
+    """Diagnose Lua source via regex pattern matching."""
+    findings: list[DiagnosticItem] = []
+    strengths: list[DiagnosticItem] = []
+    lines = text.splitlines()
+    event_lines: list[int] = []
+
+    func_clusters: list[dict[str, object]] = []
+    module_counts: dict[str, int] = {
+        "assign": 0, "call": 0, "if": 0, "loop": 0,
+        "return": 0, "local": 0, "function_def": 0,
+        "table_constructor": 0, "coroutine": 0,
+    }
+
+    func_re = re.compile(r"^\s*(?:local\s+)?function\s+(\w[\w.]*)\s*\(")
+    assign_re = re.compile(r"\w+\s*=(?!=)")
+    local_re = re.compile(r"^\s*local\s+\w")
+    call_re = re.compile(r"\w+\s*[\(:]")
+    if_re = re.compile(r"^\s*(?:if|elseif)\s+")
+    loop_re = re.compile(r"^\s*(?:for|while|repeat)\b")
+    return_re = re.compile(r"^\s*return\b")
+    table_re = re.compile(r"\{")
+    coroutine_re = re.compile(r"\bcoroutine\.\w+")
+    loadstring_re = re.compile(r"\b(?:loadstring|dofile|loadfile)\s*\(")
+    metatable_re = re.compile(r"\bsetmetatable\b|\bgetmetatable\b|__index|__newindex|__call|__add|__mul")
+
+    # Track globals: assignments without 'local' at file scope
+    global_assigns: list[tuple[str, int]] = []
+    global_re = re.compile(r"^(\w+)\s*=(?!=)")  # no indent, no local
+
+    cur_func_name = ""
+    cur_func_start = 0
+    cur_func_counts: dict[str, int] = {}
+    cur_func_events: list[int] = []
+    in_func = False
+
+    has_coroutine = False
+    has_metatable = False
+    has_local_scoping = False
+
+    for idx, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("--"):
+            continue
+
+        fm = func_re.match(stripped)
+        if fm:
+            if in_func and cur_func_name:
+                func_clusters.append(_build_lua_cluster(
+                    cur_func_name, cur_func_start, idx - 1,
+                    cur_func_counts, cur_func_events, text,
+                ))
+            cur_func_name = fm.group(1)
+            cur_func_start = idx
+            cur_func_counts = {k: 0 for k in module_counts}
+            cur_func_events = []
+            in_func = True
+            module_counts["function_def"] += 1
+            continue
+
+        if local_re.match(stripped):
+            module_counts["local"] += 1
+            has_local_scoping = True
+            if in_func:
+                cur_func_counts["local"] = cur_func_counts.get("local", 0) + 1
+
+        if assign_re.search(stripped):
+            module_counts["assign"] += 1
+            if in_func:
+                cur_func_counts["assign"] = cur_func_counts.get("assign", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+            # Check for global assignment (no local, no indentation)
+            gm = global_re.match(line)
+            if gm and not local_re.match(stripped) and not in_func:
+                var_name = gm.group(1)
+                if var_name not in ("_G", "_ENV", "_VERSION"):
+                    global_assigns.append((var_name, idx))
+
+        if call_re.search(stripped):
+            module_counts["call"] += 1
+            if in_func:
+                cur_func_counts["call"] = cur_func_counts.get("call", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if if_re.match(stripped):
+            module_counts["if"] += 1
+            if in_func:
+                cur_func_counts["if"] = cur_func_counts.get("if", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if loop_re.match(stripped):
+            module_counts["loop"] += 1
+            if in_func:
+                cur_func_counts["loop"] = cur_func_counts.get("loop", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if return_re.match(stripped):
+            module_counts["return"] += 1
+            if in_func:
+                cur_func_counts["return"] = cur_func_counts.get("return", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if table_re.search(stripped):
+            module_counts["table_constructor"] += 1
+            if in_func:
+                cur_func_counts["table_constructor"] = cur_func_counts.get("table_constructor", 0) + 1
+
+        if coroutine_re.search(stripped):
+            module_counts["coroutine"] += 1
+            has_coroutine = True
+            if in_func:
+                cur_func_counts["coroutine"] = cur_func_counts.get("coroutine", 0) + 1
+
+        if metatable_re.search(stripped):
+            has_metatable = True
+
+        # Findings
+        if loadstring_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="dynamic_code_loading",
+                message="loadstring/dofile/loadfile found — dynamic code loading can be a security risk.",
+                line=idx, symbol="loadstring",
+            ))
+
+    # Close last function
+    if in_func and cur_func_name:
+        func_clusters.append(_build_lua_cluster(
+            cur_func_name, cur_func_start, len(lines),
+            cur_func_counts, cur_func_events, text,
+        ))
+
+    # Global variable findings
+    if global_assigns:
+        for var_name, line_no in global_assigns[:5]:  # cap at 5 to avoid flooding
+            findings.append(DiagnosticItem(
+                severity="warning", kind="global_variable",
+                message=f"Global variable '{var_name}' — prefer 'local' for scoping.",
+                line=line_no, symbol=var_name,
+            ))
+
+    # Strengths
+    if has_local_scoping:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="local_scoping",
+            message="'local' keyword used for variable scoping — reduces global namespace pollution.",
+            line=0, symbol="local",
+        ))
+    if has_coroutine:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="coroutine_usage",
+            message="Coroutine usage detected — cooperative multitasking pattern.",
+            line=0, symbol="coroutine",
+        ))
+    if has_metatable:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="metatable_usage",
+            message="Metatables used — enables OOP and operator overloading patterns.",
+            line=0, symbol="metatable",
+        ))
+
+    entropy = _shannon_entropy(module_counts)
+    n_lines = max(len(lines), 1)
+
+    return {
+        "language": "lua",
+        "source_file": str(path),
+        "findings": [item.to_dict() for item in findings],
+        "strengths": [item.to_dict() for item in strengths],
+        "entropy_clusters": [
+            {
+                "scope": "module",
+                "name": "<module>",
+                "cluster": _entropy_bucket(entropy),
+                "entropy": round(entropy, 4),
+                "dominant_signal": _dominant_signal(module_counts),
+                "logic_labels": _logic_labels("<module>", text, module_counts, "lua"),
+                "counts": dict(module_counts),
+                "modular_flow": _modular_flow_profile(event_lines, 1, n_lines),
+            },
+            *func_clusters,
+        ],
+    }
+
+
 def analyze_logic_file(path: str | Path) -> dict[str, object]:
     source = Path(path)
     text = _load_text(source)
@@ -1076,6 +3507,28 @@ def analyze_logic_file(path: str | Path) -> dict[str, object]:
         payload = _diagnose_go(source, text)
     elif suffix in {".c", ".h", ".pseudo", ".ppc"}:
         payload = _diagnose_c_pseudo(source, text)
+    elif suffix == ".rs":
+        payload = _diagnose_rust(source, text)
+    elif suffix in {".js", ".jsx", ".mjs"}:
+        payload = _diagnose_javascript(source, text)
+    elif suffix in {".ts", ".tsx"}:
+        payload = _diagnose_typescript(source, text)
+    elif suffix == ".java":
+        payload = _diagnose_java(source, text)
+    elif suffix == ".zig":
+        payload = _diagnose_zig(source, text)
+    elif suffix in {".cpp", ".cc", ".cxx", ".hpp"}:
+        payload = _diagnose_cpp(source, text)
+    elif suffix in {".yaml", ".yml"}:
+        payload = _diagnose_yaml(source, text)
+    elif suffix == ".sql":
+        payload = _diagnose_sql(source, text)
+    elif suffix == ".rb":
+        payload = _diagnose_ruby(source, text)
+    elif suffix == ".lua":
+        payload = _diagnose_lua(source, text)
+    elif source.name.lower() == "dockerfile" or source.name.lower().startswith("dockerfile."):
+        payload = _diagnose_dockerfile(source, text)
     else:
         payload = {
             "language": "unknown",

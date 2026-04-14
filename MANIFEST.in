@@ -1,0 +1,9 @@
+exclude adapted_transformer.json
+exclude exported_inspect.json
+exclude launcher.py
+exclude repo_index.json
+exclude build_exe.ps1
+exclude tensorearch.spec
+exclude CLAUDE_READY_INDEX.md
+prune build
+prune dist

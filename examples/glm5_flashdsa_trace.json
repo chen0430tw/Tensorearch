@@ -1,0 +1,65 @@
+{
+  "system": {
+    "name": "glm5-flashdsa-10000",
+    "model_arch": "glm5_flashdsa",
+    "num_layers": 2,
+    "hidden_size": 512,
+    "intermediate_size": 1024,
+    "num_heads": 64,
+    "kv_heads": 1,
+    "batch_size": 1,
+    "seq_len": 32,
+    "dtype": "bf16",
+    "measured_latency_ms": 12.57,
+    "measured_tokens_per_sec": 2545.8,
+    "device": "H100",
+    "tp_degree": 1,
+    "pp_degree": 1,
+    "metadata": {
+      "variant": "flashdsa",
+      "train_steps": 10000,
+      "final_loss": 0.5257,
+      "best_loss": 0.1556,
+      "avg_last5_loss": 0.5302,
+      "attention_backend": "flash_dsa"
+    }
+  },
+  "slices": [
+    {"slice_id":"embed","kind":"embedding","op_type":"embed","layer_index":-1,"hidden_size":512,"tokens_in":32,"tokens_out":32,"flops":0.15,"activation_bytes":0.08,"memory_bytes":0.06,"weight_bytes":0.20,"comm_bytes":0.0,"sync_cost":0.0,"kernel_time_ms":0.22,"stall_ms":0.01,"measured_latency_ms":0.24,"write_magnitude":0.82,"read_sensitivity":0.82,"doi_alignment":0.73},
+
+    {"slice_id":"blk0.q_proj","kind":"attention","op_type":"attn_q","layer_index":0,"hidden_size":512,"num_heads":64,"kv_heads":1,"tokens_in":32,"tokens_out":32,"flops":0.92,"activation_bytes":0.30,"memory_bytes":0.18,"weight_bytes":0.34,"kv_bytes":0.0,"comm_bytes":0.0,"sync_cost":0.01,"kernel_time_ms":0.42,"stall_ms":0.03,"measured_latency_ms":0.46,"write_magnitude":1.02,"read_sensitivity":1.03,"doi_alignment":0.96},
+    {"slice_id":"blk0.kv_lora","kind":"attention","op_type":"kv_lora","layer_index":0,"hidden_size":512,"num_heads":64,"kv_heads":1,"tokens_in":32,"tokens_out":32,"flops":0.86,"activation_bytes":0.34,"memory_bytes":0.22,"weight_bytes":0.36,"kv_bytes":0.62,"comm_bytes":0.0,"sync_cost":0.01,"kernel_time_ms":0.48,"stall_ms":0.04,"measured_latency_ms":0.54,"write_magnitude":1.00,"read_sensitivity":1.06,"doi_alignment":0.91},
+    {"slice_id":"blk0.indexer","kind":"router","op_type":"indexer","layer_index":0,"hidden_size":512,"num_heads":32,"kv_heads":1,"tokens_in":32,"tokens_out":32,"flops":1.05,"activation_bytes":0.32,"memory_bytes":0.24,"weight_bytes":0.40,"comm_bytes":0.0,"sync_cost":0.02,"kernel_time_ms":0.62,"stall_ms":0.06,"measured_latency_ms":0.70,"write_magnitude":1.10,"read_sensitivity":1.18,"doi_alignment":0.93},
+    {"slice_id":"blk0.lecac","kind":"router","op_type":"lecac_bridge","layer_index":0,"hidden_size":512,"tokens_in":32,"tokens_out":32,"flops":0.90,"activation_bytes":0.38,"memory_bytes":0.28,"weight_bytes":0.10,"kv_bytes":0.60,"comm_bytes":0.0,"sync_cost":0.02,"kernel_time_ms":0.75,"stall_ms":0.07,"measured_latency_ms":0.84,"write_magnitude":1.08,"read_sensitivity":1.14,"doi_alignment":0.88},
+    {"slice_id":"blk0.flash_dsa","kind":"attention","op_type":"flash_dsa","layer_index":0,"hidden_size":512,"num_heads":64,"kv_heads":1,"tokens_in":32,"tokens_out":32,"flops":2.45,"activation_bytes":0.78,"memory_bytes":0.55,"weight_bytes":0.22,"kv_bytes":0.95,"comm_bytes":0.0,"sync_cost":0.03,"kernel_time_ms":2.15,"stall_ms":0.16,"measured_latency_ms":2.34,"write_magnitude":1.34,"read_sensitivity":1.20,"doi_alignment":1.00},
+    {"slice_id":"blk0.ffn","kind":"ffn","op_type":"ffn","layer_index":0,"hidden_size":512,"intermediate_size":1024,"tokens_in":32,"tokens_out":32,"flops":1.36,"activation_bytes":0.42,"memory_bytes":0.30,"weight_bytes":0.58,"comm_bytes":0.0,"sync_cost":0.01,"kernel_time_ms":0.86,"stall_ms":0.07,"measured_latency_ms":0.95,"write_magnitude":1.02,"read_sensitivity":0.97,"doi_alignment":0.92},
+
+    {"slice_id":"blk1.q_proj","kind":"attention","op_type":"attn_q","layer_index":1,"hidden_size":512,"num_heads":64,"kv_heads":1,"tokens_in":32,"tokens_out":32,"flops":0.92,"activation_bytes":0.30,"memory_bytes":0.18,"weight_bytes":0.34,"kv_bytes":0.0,"comm_bytes":0.0,"sync_cost":0.01,"kernel_time_ms":0.43,"stall_ms":0.03,"measured_latency_ms":0.47,"write_magnitude":1.03,"read_sensitivity":1.03,"doi_alignment":0.96},
+    {"slice_id":"blk1.kv_lora","kind":"attention","op_type":"kv_lora","layer_index":1,"hidden_size":512,"num_heads":64,"kv_heads":1,"tokens_in":32,"tokens_out":32,"flops":0.86,"activation_bytes":0.34,"memory_bytes":0.22,"weight_bytes":0.36,"kv_bytes":0.62,"comm_bytes":0.0,"sync_cost":0.01,"kernel_time_ms":0.49,"stall_ms":0.04,"measured_latency_ms":0.55,"write_magnitude":1.00,"read_sensitivity":1.06,"doi_alignment":0.91},
+    {"slice_id":"blk1.indexer","kind":"router","op_type":"indexer","layer_index":1,"hidden_size":512,"num_heads":32,"kv_heads":1,"tokens_in":32,"tokens_out":32,"flops":1.05,"activation_bytes":0.32,"memory_bytes":0.24,"weight_bytes":0.40,"comm_bytes":0.0,"sync_cost":0.02,"kernel_time_ms":0.63,"stall_ms":0.06,"measured_latency_ms":0.71,"write_magnitude":1.11,"read_sensitivity":1.18,"doi_alignment":0.93},
+    {"slice_id":"blk1.lecac","kind":"router","op_type":"lecac_bridge","layer_index":1,"hidden_size":512,"tokens_in":32,"tokens_out":32,"flops":0.90,"activation_bytes":0.38,"memory_bytes":0.28,"weight_bytes":0.10,"kv_bytes":0.60,"comm_bytes":0.0,"sync_cost":0.02,"kernel_time_ms":0.76,"stall_ms":0.07,"measured_latency_ms":0.85,"write_magnitude":1.08,"read_sensitivity":1.14,"doi_alignment":0.88},
+    {"slice_id":"blk1.flash_dsa","kind":"attention","op_type":"flash_dsa","layer_index":1,"hidden_size":512,"num_heads":64,"kv_heads":1,"tokens_in":32,"tokens_out":32,"flops":2.48,"activation_bytes":0.78,"memory_bytes":0.55,"weight_bytes":0.22,"kv_bytes":0.95,"comm_bytes":0.0,"sync_cost":0.03,"kernel_time_ms":2.22,"stall_ms":0.16,"measured_latency_ms":2.41,"write_magnitude":1.35,"read_sensitivity":1.21,"doi_alignment":1.00},
+    {"slice_id":"blk1.ffn","kind":"ffn","op_type":"ffn","layer_index":1,"hidden_size":512,"intermediate_size":1024,"tokens_in":32,"tokens_out":32,"flops":1.36,"activation_bytes":0.42,"memory_bytes":0.30,"weight_bytes":0.58,"comm_bytes":0.0,"sync_cost":0.01,"kernel_time_ms":0.87,"stall_ms":0.07,"measured_latency_ms":0.96,"write_magnitude":1.03,"read_sensitivity":0.98,"doi_alignment":0.92},
+
+    {"slice_id":"lm_head","kind":"readout","op_type":"lm_head","layer_index":2,"hidden_size":512,"tokens_in":32,"tokens_out":32,"flops":0.40,"activation_bytes":0.12,"memory_bytes":0.08,"weight_bytes":0.25,"comm_bytes":0.0,"sync_cost":0.0,"kernel_time_ms":0.36,"stall_ms":0.02,"measured_latency_ms":0.39,"write_magnitude":0.89,"read_sensitivity":1.09,"doi_alignment":0.79}
+  ],
+  "edges": [
+    {"src":"embed","dst":"blk0.q_proj","weight":0.84,"kind":"dataflow","edge_type":"residual","edge_bytes":0.08},
+    {"src":"embed","dst":"blk0.kv_lora","weight":0.80,"kind":"dataflow","edge_type":"kv_flow","edge_bytes":0.08},
+    {"src":"embed","dst":"blk0.indexer","weight":0.72,"kind":"dataflow","edge_type":"router","edge_bytes":0.06},
+    {"src":"blk0.kv_lora","dst":"blk0.lecac","weight":0.92,"kind":"dataflow","edge_type":"kv_flow","edge_bytes":0.14},
+    {"src":"blk0.indexer","dst":"blk0.flash_dsa","weight":0.88,"kind":"dataflow","edge_type":"router","edge_bytes":0.10},
+    {"src":"blk0.lecac","dst":"blk0.flash_dsa","weight":0.90,"kind":"dataflow","edge_type":"router","edge_bytes":0.12},
+    {"src":"blk0.q_proj","dst":"blk0.flash_dsa","weight":0.92,"kind":"dataflow","edge_type":"attention","edge_bytes":0.12},
+    {"src":"blk0.flash_dsa","dst":"blk0.ffn","weight":0.88,"kind":"dataflow","edge_type":"residual","edge_bytes":0.10},
+    {"src":"blk0.ffn","dst":"blk1.q_proj","weight":0.84,"kind":"dataflow","edge_type":"residual","edge_bytes":0.10},
+    {"src":"blk0.ffn","dst":"blk1.kv_lora","weight":0.80,"kind":"dataflow","edge_type":"kv_flow","edge_bytes":0.10},
+    {"src":"blk0.ffn","dst":"blk1.indexer","weight":0.72,"kind":"dataflow","edge_type":"router","edge_bytes":0.08},
+    {"src":"blk1.kv_lora","dst":"blk1.lecac","weight":0.92,"kind":"dataflow","edge_type":"kv_flow","edge_bytes":0.14},
+    {"src":"blk1.indexer","dst":"blk1.flash_dsa","weight":0.88,"kind":"dataflow","edge_type":"router","edge_bytes":0.10},
+    {"src":"blk1.lecac","dst":"blk1.flash_dsa","weight":0.90,"kind":"dataflow","edge_type":"router","edge_bytes":0.12},
+    {"src":"blk1.q_proj","dst":"blk1.flash_dsa","weight":0.92,"kind":"dataflow","edge_type":"attention","edge_bytes":0.12},
+    {"src":"blk1.flash_dsa","dst":"blk1.ffn","weight":0.88,"kind":"dataflow","edge_type":"residual","edge_bytes":0.10},
+    {"src":"blk1.ffn","dst":"lm_head","weight":0.90,"kind":"dataflow","edge_type":"readout","edge_bytes":0.08}
+  ]
+}
