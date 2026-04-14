@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tensorearch"
-version = "1.0.0"
+version = "1.1.0"
 description = "Architecture inspection toolkit for slice topology, throughput, and bottleneck analysis"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,6 +13,9 @@ authors = [
   { name = "chen0430tw" }
 ]
 dependencies = []
+
+[project.optional-dependencies]
+binary = ["ppm-engine>=0.3.0"]  # enables binary (.sys/.exe/.dll) diagnosis via PPM pseudocode
 keywords = [
   "architecture-analysis",
   "model-inspection",
