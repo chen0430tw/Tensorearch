@@ -634,6 +634,435 @@ def _diagnose_shell(path: str | Path, text: str) -> dict[str, object]:
     }
 
 
+def _diagnose_go(path: str | Path, text: str) -> dict[str, object]:
+    """Diagnose Go source via regex pattern matching (no AST required)."""
+    findings: list[DiagnosticItem] = []
+    strengths: list[DiagnosticItem] = []
+    lines = text.splitlines()
+    event_lines: list[int] = []
+
+    # Per-function tracking
+    func_clusters: list[dict[str, object]] = []
+    module_counts: dict[str, int] = {
+        "assign": 0, "call": 0, "if": 0, "loop": 0,
+        "return": 0, "compare": 0, "switch": 0, "defer": 0,
+        "goroutine": 0, "error_check": 0,
+    }
+
+    # Regex patterns for Go
+    func_re = re.compile(r"^func\s+(?:\(.*?\)\s*)?(\w+)\s*\(")
+    assign_re = re.compile(r"(?::=|[^=!<>]=[^=])")
+    call_re = re.compile(r"\w+\.\w+\(|\w+\(")
+    if_re = re.compile(r"^\s*if\s+")
+    for_re = re.compile(r"^\s*for\s+")
+    return_re = re.compile(r"^\s*return\s")
+    switch_re = re.compile(r"^\s*switch\s")
+    defer_re = re.compile(r"^\s*defer\s")
+    go_re = re.compile(r"^\s*go\s+\w")
+    err_check_re = re.compile(r"if\s+err\s*!=\s*nil")
+    nil_return_re = re.compile(r"return\s+.*,\s*nil|return\s+nil\s*,")
+    mutex_re = re.compile(r"\.(?:Lock|Unlock|RLock|RUnlock)\(\)")
+    atomic_re = re.compile(r"atomic\.\w+")
+    panic_re = re.compile(r"\bpanic\(")
+
+    # Track variable overwrites
+    var_assignments: dict[str, list[int]] = {}
+    var_assign_re = re.compile(r"^\s*(\w+)\s*(?::?=)\s*")
+
+    # Current function tracking
+    cur_func_name = ""
+    cur_func_start = 0
+    cur_func_counts: dict[str, int] = {}
+    cur_func_events: list[int] = []
+    brace_depth = 0
+    in_func = False
+
+    for idx, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("//"):
+            continue
+
+        # Track brace depth
+        brace_depth += stripped.count("{") - stripped.count("}")
+
+        # Detect function boundaries
+        fm = func_re.match(stripped)
+        if fm:
+            # Close previous function
+            if in_func and cur_func_name:
+                func_clusters.append(_build_go_cluster(
+                    cur_func_name, cur_func_start, idx - 1,
+                    cur_func_counts, cur_func_events, text,
+                ))
+            cur_func_name = fm.group(1)
+            cur_func_start = idx
+            cur_func_counts = {k: 0 for k in module_counts}
+            cur_func_events = []
+            in_func = True
+            continue
+
+        # Count patterns
+        if assign_re.search(stripped):
+            module_counts["assign"] += 1
+            if in_func:
+                cur_func_counts["assign"] = cur_func_counts.get("assign", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+            vm = var_assign_re.match(stripped)
+            if vm:
+                var_assignments.setdefault(vm.group(1), []).append(idx)
+
+        if call_re.search(stripped):
+            module_counts["call"] += 1
+            if in_func:
+                cur_func_counts["call"] = cur_func_counts.get("call", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if if_re.match(stripped):
+            module_counts["if"] += 1
+            if in_func:
+                cur_func_counts["if"] = cur_func_counts.get("if", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if for_re.match(stripped):
+            module_counts["loop"] += 1
+            if in_func:
+                cur_func_counts["loop"] = cur_func_counts.get("loop", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if return_re.match(stripped):
+            module_counts["return"] += 1
+            if in_func:
+                cur_func_counts["return"] = cur_func_counts.get("return", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        if switch_re.match(stripped):
+            module_counts["switch"] += 1
+            if in_func:
+                cur_func_counts["switch"] = cur_func_counts.get("switch", 0) + 1
+
+        if defer_re.match(stripped):
+            module_counts["defer"] += 1
+            if in_func:
+                cur_func_counts["defer"] = cur_func_counts.get("defer", 0) + 1
+
+        if go_re.match(stripped):
+            module_counts["goroutine"] += 1
+            if in_func:
+                cur_func_counts["goroutine"] = cur_func_counts.get("goroutine", 0) + 1
+
+        if err_check_re.search(stripped):
+            module_counts["error_check"] += 1
+            if in_func:
+                cur_func_counts["error_check"] = cur_func_counts.get("error_check", 0) + 1
+
+        # Detect findings
+        if panic_re.search(stripped):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="panic_call",
+                message="panic() found — prefer returning error in library code.",
+                line=idx, symbol="panic",
+            ))
+
+    # Close last function
+    if in_func and cur_func_name:
+        func_clusters.append(_build_go_cluster(
+            cur_func_name, cur_func_start, len(lines),
+            cur_func_counts, cur_func_events, text,
+        ))
+
+    # Variable overwrite detection
+    for name, hit_lines in var_assignments.items():
+        if len(hit_lines) >= 5 and name not in ("err", "_", "i", "j", "k", "n"):
+            findings.append(DiagnosticItem(
+                severity="warning", kind="repeated_overwrite",
+                message=f"Variable '{name}' is assigned {len(hit_lines)} times. May hide effective computation path.",
+                line=hit_lines[0], symbol=name,
+            ))
+
+    # Strengths
+    if module_counts["error_check"] > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="explicit_error_handling",
+            message=f"{module_counts['error_check']} explicit 'if err != nil' checks found.",
+            line=0, symbol="error_check",
+        ))
+    if module_counts["defer"] > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="defer_cleanup",
+            message=f"{module_counts['defer']} defer statement(s) for cleanup.",
+            line=0, symbol="defer",
+        ))
+    if module_counts["goroutine"] > 0:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="goroutine_concurrency",
+            message=f"{module_counts['goroutine']} goroutine launch(es) detected.",
+            line=0, symbol="goroutine",
+        ))
+
+    # Module-level entropy
+    entropy = _shannon_entropy(module_counts)
+    n_lines = max(len(lines), 1)
+
+    return {
+        "language": "go",
+        "source_file": str(path),
+        "findings": [item.to_dict() for item in findings],
+        "strengths": [item.to_dict() for item in strengths],
+        "entropy_clusters": [
+            {
+                "scope": "module",
+                "name": "<module>",
+                "cluster": _entropy_bucket(entropy),
+                "entropy": round(entropy, 4),
+                "dominant_signal": _dominant_signal(module_counts),
+                "logic_labels": _logic_labels("<module>", text, module_counts, "go"),
+                "counts": dict(module_counts),
+                "modular_flow": _modular_flow_profile(event_lines, 1, n_lines),
+            },
+            *func_clusters,
+        ],
+    }
+
+
+def _build_go_cluster(
+    name: str, start: int, end: int,
+    counts: dict[str, int], event_lines: list[int], full_text: str,
+) -> dict[str, object]:
+    """Build an entropy cluster for a Go function."""
+    entropy = _shannon_entropy(counts)
+    # Extract function text for label inference
+    text_lines = full_text.splitlines()
+    func_text = "\n".join(text_lines[start - 1:end]) if start > 0 else ""
+    return {
+        "scope": "function",
+        "name": name,
+        "cluster": _entropy_bucket(entropy),
+        "entropy": round(entropy, 4),
+        "dominant_signal": _dominant_signal(counts),
+        "logic_labels": _logic_labels(name, func_text, counts, "go"),
+        "counts": dict(counts),
+        "line": start,
+        "modular_flow": _modular_flow_profile(event_lines, start, end),
+    }
+
+
+def _diagnose_c_pseudo(path: str | Path, text: str) -> dict[str, object]:
+    """Diagnose C-like pseudocode (e.g., from PPM PseudoCodeGenerator output).
+
+    Extracts control flow and data flow patterns from C-style pseudocode
+    without requiring a real C parser. Works on PPM's output format as well
+    as hand-written C pseudocode.
+    """
+    findings: list[DiagnosticItem] = []
+    strengths: list[DiagnosticItem] = []
+    lines = text.splitlines()
+    event_lines: list[int] = []
+
+    counts: dict[str, int] = {
+        "assign": 0, "call": 0, "if": 0, "loop": 0,
+        "return": 0, "compare": 0, "goto": 0, "bitmask": 0,
+    }
+
+    # Per-function tracking
+    func_clusters: list[dict[str, object]] = []
+    func_re = re.compile(r"^(?:void|NTSTATUS|int|PVOID|BOOLEAN|HANDLE|LONG)\s+(\w+)\s*\(")
+    cur_func_name = ""
+    cur_func_start = 0
+    cur_func_counts: dict[str, int] = {}
+    cur_func_events: list[int] = []
+    in_func = False
+
+    # API call tracking for architecture inference
+    api_calls: list[tuple[str, int]] = []
+    goto_count = 0
+    bitmask_count = 0
+
+    for idx, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("//"):
+            # Check for function header in comments
+            if "Function at" in stripped:
+                continue
+            continue
+
+        # Detect function boundaries
+        fm = func_re.match(stripped)
+        if fm:
+            if in_func and cur_func_name:
+                func_clusters.append(_build_pseudo_cluster(
+                    cur_func_name, cur_func_start, idx - 1,
+                    cur_func_counts, cur_func_events, text,
+                ))
+            cur_func_name = fm.group(1)
+            cur_func_start = idx
+            cur_func_counts = {k: 0 for k in counts}
+            cur_func_events = []
+            in_func = True
+            continue
+
+        # Assignment: "reg = value;" or "dst = src;"
+        if "=" in stripped and "==" not in stripped and "!=" not in stripped and not stripped.startswith("if"):
+            if re.search(r"\w+\s*[+\-|&^]*=\s*", stripped):
+                counts["assign"] += 1
+                if in_func:
+                    cur_func_counts["assign"] = cur_func_counts.get("assign", 0) + 1
+                event_lines.append(idx)
+                if in_func:
+                    cur_func_events.append(idx)
+
+        # Bitmask operations
+        if "&=" in stripped or "|=" in stripped:
+            counts["bitmask"] += 1
+            bitmask_count += 1
+            if in_func:
+                cur_func_counts["bitmask"] = cur_func_counts.get("bitmask", 0) + 1
+
+        # Function calls: "ApiName(args);"
+        call_match = re.search(r"(\w+)\s*\(", stripped)
+        if call_match and not stripped.startswith("if") and not stripped.startswith("for"):
+            fn_name = call_match.group(1)
+            if fn_name not in ("if", "for", "while", "switch", "void", "int", "return"):
+                counts["call"] += 1
+                api_calls.append((fn_name, idx))
+                if in_func:
+                    cur_func_counts["call"] = cur_func_counts.get("call", 0) + 1
+                event_lines.append(idx)
+                if in_func:
+                    cur_func_events.append(idx)
+
+        # Conditionals
+        if stripped.startswith("if ") or stripped.startswith("if("):
+            counts["if"] += 1
+            counts["compare"] += 1
+            if in_func:
+                cur_func_counts["if"] = cur_func_counts.get("if", 0) + 1
+                cur_func_counts["compare"] = cur_func_counts.get("compare", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        # Loops
+        if stripped.startswith("for ") or stripped.startswith("while ") or stripped.startswith("for(") or stripped.startswith("while("):
+            counts["loop"] += 1
+            if in_func:
+                cur_func_counts["loop"] = cur_func_counts.get("loop", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        # Return
+        if stripped.startswith("return ") or stripped == "return;":
+            counts["return"] += 1
+            if in_func:
+                cur_func_counts["return"] = cur_func_counts.get("return", 0) + 1
+            event_lines.append(idx)
+            if in_func:
+                cur_func_events.append(idx)
+
+        # Goto (common in decompiled code)
+        if stripped.startswith("goto "):
+            counts["goto"] += 1
+            goto_count += 1
+            if in_func:
+                cur_func_counts["goto"] = cur_func_counts.get("goto", 0) + 1
+
+    # Close last function
+    if in_func and cur_func_name:
+        func_clusters.append(_build_pseudo_cluster(
+            cur_func_name, cur_func_start, len(lines),
+            cur_func_counts, cur_func_events, text,
+        ))
+
+    # Findings for pseudocode
+    if goto_count >= 3:
+        findings.append(DiagnosticItem(
+            severity="warning", kind="excessive_goto",
+            message=f"{goto_count} goto statements — complex control flow, likely from decompilation.",
+            line=0, symbol="goto",
+        ))
+    if bitmask_count >= 3:
+        strengths.append(DiagnosticItem(
+            severity="info", kind="bitmask_operations",
+            message=f"{bitmask_count} bitmask operations detected — likely flag manipulation or permission checks.",
+            line=0, symbol="bitmask",
+        ))
+
+    # Detect known dangerous API patterns
+    dangerous_apis = {"ZwTerminateProcess", "KeInsertQueueApc", "ZwAllocateVirtualMemory"}
+    protection_apis = {"ObRegisterCallbacks", "CmRegisterCallbackEx", "PsSetCreateProcessNotifyRoutine"}
+    found_dangerous = [(name, ln) for name, ln in api_calls if name in dangerous_apis]
+    found_protection = [(name, ln) for name, ln in api_calls if name in protection_apis]
+
+    if found_dangerous:
+        for name, ln in found_dangerous:
+            findings.append(DiagnosticItem(
+                severity="warning", kind="dangerous_api",
+                message=f"Potentially dangerous API call: {name}",
+                line=ln, symbol=name,
+            ))
+    if found_protection:
+        for name, ln in found_protection:
+            strengths.append(DiagnosticItem(
+                severity="info", kind="protection_callback",
+                message=f"Protection/monitoring callback registration: {name}",
+                line=ln, symbol=name,
+            ))
+
+    entropy = _shannon_entropy(counts)
+    n_lines = max(len(lines), 1)
+
+    return {
+        "language": "c_pseudo",
+        "source_file": str(path),
+        "findings": [item.to_dict() for item in findings],
+        "strengths": [item.to_dict() for item in strengths],
+        "entropy_clusters": [
+            {
+                "scope": "module",
+                "name": "<module>",
+                "cluster": _entropy_bucket(entropy),
+                "entropy": round(entropy, 4),
+                "dominant_signal": _dominant_signal(counts),
+                "logic_labels": _logic_labels("<module>", text, counts, "c_pseudo"),
+                "counts": dict(counts),
+                "modular_flow": _modular_flow_profile(event_lines, 1, n_lines),
+            },
+            *func_clusters,
+        ],
+    }
+
+
+def _build_pseudo_cluster(
+    name: str, start: int, end: int,
+    counts: dict[str, int], event_lines: list[int], full_text: str,
+) -> dict[str, object]:
+    """Build an entropy cluster for a pseudocode function."""
+    entropy = _shannon_entropy(counts)
+    text_lines = full_text.splitlines()
+    func_text = "\n".join(text_lines[start - 1:end]) if start > 0 else ""
+    return {
+        "scope": "function",
+        "name": name,
+        "cluster": _entropy_bucket(entropy),
+        "entropy": round(entropy, 4),
+        "dominant_signal": _dominant_signal(counts),
+        "logic_labels": _logic_labels(name, func_text, counts, "c_pseudo"),
+        "counts": dict(counts),
+        "line": start,
+        "modular_flow": _modular_flow_profile(event_lines, start, end),
+    }
+
+
 def analyze_logic_file(path: str | Path) -> dict[str, object]:
     source = Path(path)
     text = _load_text(source)
@@ -643,6 +1072,10 @@ def analyze_logic_file(path: str | Path) -> dict[str, object]:
         payload = _diagnose_python(source, text)
     elif suffix in {".sh", ".bash", ".zsh", ".ps1", ".cmd", ".bat"}:
         payload = _diagnose_shell(source, text)
+    elif suffix == ".go":
+        payload = _diagnose_go(source, text)
+    elif suffix in {".c", ".h", ".pseudo", ".ppc"}:
+        payload = _diagnose_c_pseudo(source, text)
     else:
         payload = {
             "language": "unknown",
