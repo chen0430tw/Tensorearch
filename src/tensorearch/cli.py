@@ -8,15 +8,22 @@ from .adapters import graph_from_oscillator_trace, graph_from_transformer_trace,
 from .compare import comparison_report, comparison_report_json
 from .demo import demo_payload, demo_report, demo_report_json
 from .diagnose import analyze_logic_file, diagnose_report, diagnose_report_json
+from .forecast import forecast_report, forecast_report_json
 from .intervention import apply_intervention
-from .io import load_graph_from_json
-from .report import export_comparison_report, export_inspect_report, export_payload
+from .io import load_graph_from_json, load_training_trace_from_json
+from .report import export_comparison_report, export_forecast_report, export_inspect_report, export_payload
 from .schema import Intervention
 from .space import analyze_source_file, space_report, space_report_json
+from .temporal import analyze_time_series_file, temporal_report, temporal_report_json
+from .temporal_radio import analyze_temporal_radio_file, temporal_radio_report, temporal_radio_report_json
 
 
 def _load_graph(path: str):
     return load_graph_from_json(path)
+
+
+def _load_training_trace(path: str):
+    return load_training_trace_from_json(path)
 
 
 def _build_from_adapter(adapter: str, payload: dict, family: str = "", input_path: str = ""):
@@ -85,6 +92,39 @@ def main() -> None:
     diagnose_p.add_argument("--source-file", required=True)
     diagnose_p.add_argument("--output", default="")
     diagnose_p.add_argument("--json", action="store_true", help="emit machine-readable JSON output")
+
+    forecast_p = sub.add_parser("forecast", help="predict final training outcome from an early training trace prefix")
+    forecast_p.add_argument("trace")
+    forecast_p.add_argument("--output", default="")
+    forecast_p.add_argument("--json", action="store_true", help="emit machine-readable JSON output")
+
+    temporal_p = sub.add_parser("temporal",
+        help="detect CFL/dispersion instabilities in a (T, *spatial) tensor time series")
+    temporal_p.add_argument("--input", required=True,
+        help=".npz, .npy, or .json file containing a time series of shape (T, *spatial)")
+    temporal_p.add_argument("--key", default="",
+        help="array key inside .npz/.json (default: first array)")
+    temporal_p.add_argument("--dt", type=float, default=None,
+        help="physical timestep (default: read from file or 1.0)")
+    temporal_p.add_argument("--growth", type=float, default=1.01,
+        help="amplitude growth threshold per step (default 1.01 = 1%%)")
+    temporal_p.add_argument("--phase-tol", type=float, default=0.15,
+        help="phase-match tolerance in radians (default 0.15 ≈ 8.6°)")
+    temporal_p.add_argument("--output", default="")
+    temporal_p.add_argument("--json", action="store_true", help="emit machine-readable JSON output")
+
+    tradio_p = sub.add_parser(
+        "temporal-radio",
+        help="scan vector-field anomalies and lock onto the strongest temporal channel",
+    )
+    tradio_p.add_argument("--input", required=True, help=".npz or .json file containing u/v and optional refs")
+    tradio_p.add_argument("--dt", type=float, default=None, help="physical timestep (default: read from file)")
+    tradio_p.add_argument("--case-id", default="", help="override case identifier")
+    tradio_p.add_argument("--time-bins", type=int, default=8, help="number of coarse temporal bins")
+    tradio_p.add_argument("--y-bins", type=int, default=12, help="number of coarse spatial bins in y")
+    tradio_p.add_argument("--x-bins", type=int, default=16, help="number of coarse spatial bins in x")
+    tradio_p.add_argument("--output", default="")
+    tradio_p.add_argument("--json", action="store_true", help="emit machine-readable JSON output")
 
     sub.add_parser("help", help="show detailed usage guide")
 
@@ -176,6 +216,56 @@ def main() -> None:
                 print(f"[verbose] wrote report={args.output}")
         return
 
+    if args.cmd == "forecast":
+        trace = _load_training_trace(args.trace)
+        if args.verbose:
+            print(f"[verbose] forecasting trace={args.trace} run_id={trace.run_id}")
+        report = forecast_report_json(trace) if args.json else forecast_report(trace)
+        print(report)
+        if args.output:
+            export_forecast_report(trace, args.output, as_json=args.json)
+            if args.verbose:
+                print(f"[verbose] wrote report={args.output}")
+        return
+
+    if args.cmd == "temporal":
+        if args.verbose:
+            print(f"[verbose] temporal input={args.input} key={args.key or '(auto)'} "
+                  f"dt={args.dt} growth={args.growth} phase_tol={args.phase_tol}")
+        report = analyze_time_series_file(
+            args.input, key=args.key, dt=args.dt,
+            growth_threshold=args.growth, phase_threshold_rad=args.phase_tol,
+        )
+        text = temporal_report_json(report) if args.json else temporal_report(report)
+        print(text)
+        if args.output:
+            Path(args.output).write_text(text, encoding="utf-8")
+            if args.verbose:
+                print(f"[verbose] wrote report={args.output}")
+        return
+
+    if args.cmd == "temporal-radio":
+        if args.verbose:
+            print(
+                f"[verbose] temporal-radio input={args.input} dt={args.dt} case_id={args.case_id or '(auto)'} "
+                f"time_bins={args.time_bins} y_bins={args.y_bins} x_bins={args.x_bins}"
+            )
+        report = analyze_temporal_radio_file(
+            args.input,
+            dt=args.dt,
+            case_id=args.case_id,
+            time_bins=args.time_bins,
+            y_bins=args.y_bins,
+            x_bins=args.x_bins,
+        )
+        text = temporal_radio_report_json(report) if args.json else temporal_radio_report(report)
+        print(text)
+        if args.output:
+            Path(args.output).write_text(text, encoding="utf-8")
+            if args.verbose:
+                print(f"[verbose] wrote report={args.output}")
+        return
+
     if args.cmd == "help":
         _print_help()
         return
@@ -207,6 +297,18 @@ COMMANDS
 
   diagnose  Audit source-level logic: entropy clusters, modular flow, mutation tracking
             tensorearch diagnose --source-file script.py [--json]
+
+  forecast  Predict whether training outcome is already visible from an early prefix
+            tensorearch forecast training_trace.json [--json]
+
+  temporal  Detect CFL/dispersion instabilities (2Δt checkerboard, growth) in a
+            numerical-simulation (T, *spatial) tensor via symmetric cyclic numbers
+            tensorearch temporal --input u.npz [--key u] [--dt 60] [--json]
+
+  temporal-radio
+            Scan vector-field anomalies, lock onto the strongest channel, and emit
+            reversible gate coordinates for follow-up
+            tensorearch temporal-radio --input rollout_uv.npz [--json]
 
   export    Write inspect or compare results to a file
             tensorearch export --mode inspect --left trace.json --output out.json [--json]
@@ -248,4 +350,7 @@ EXAMPLES
 
   # Diagnose scoring logic
   tensorearch diagnose --source-file scorer.py --json
+
+  # Predict whether a run can be stopped early
+  tensorearch forecast training_trace.json --json
 """)

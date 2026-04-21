@@ -3,7 +3,7 @@ from pathlib import Path
 
 from .features import enrich_graph
 from .graph import ArchitectureGraph
-from .schema import SliceEdge, SliceState, SystemTrace
+from .schema import SliceEdge, SliceState, SystemTrace, TrainingStep, TrainingTrace
 
 
 def load_graph_from_dict(payload: dict) -> ArchitectureGraph:
@@ -81,3 +81,29 @@ def load_graph_from_dict(payload: dict) -> ArchitectureGraph:
 def load_graph_from_json(path: str | Path) -> ArchitectureGraph:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     return load_graph_from_dict(payload)
+
+
+def load_training_trace_from_dict(payload: dict) -> TrainingTrace:
+    return TrainingTrace(
+        run_id=payload.get("run_id", "unknown_run"),
+        checkpoint_path=payload.get("checkpoint_path", ""),
+        target_metric=payload.get("target_metric", "val_metric"),
+        steps=[
+            TrainingStep(
+                step=int(item["step"]),
+                train_loss=float(item.get("train_loss", 0.0)),
+                val_metric=float(item.get("val_metric", 0.0)),
+                grad_norm=float(item.get("grad_norm", 0.0)),
+                curvature=float(item.get("curvature", 0.0)),
+                direction_consistency=float(item.get("direction_consistency", 0.0)),
+                metadata=dict(item.get("metadata", {})),
+            )
+            for item in payload.get("steps", [])
+        ],
+        metadata=dict(payload.get("metadata", {})),
+    )
+
+
+def load_training_trace_from_json(path: str | Path) -> TrainingTrace:
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    return load_training_trace_from_dict(payload)

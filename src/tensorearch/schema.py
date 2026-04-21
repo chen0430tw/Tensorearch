@@ -73,3 +73,38 @@ class Intervention:
     target: str
     value: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class TrainingStep:
+    step: int
+    train_loss: float = 0.0
+    val_metric: float = 0.0
+    grad_norm: float = 0.0
+    curvature: float = 0.0
+    direction_consistency: float = 0.0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class TrainingTrace:
+    run_id: str
+    checkpoint_path: str = ""
+    target_metric: str = "val_metric"
+    steps: list[TrainingStep] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ForecastResult:
+    run_id: str
+    predicted_final_score: float
+    uncertainty: float
+    confidence: float
+    earliest_decision_step: int
+    continue_training_recommended: bool
+    stability: float
+    growth_fitness: float
+    growth_gain: float
+    reason: str
+    metadata: dict[str, Any] = field(default_factory=dict)

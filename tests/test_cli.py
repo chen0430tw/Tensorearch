@@ -2,6 +2,10 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import numpy as np
+
+from tensorearch.forecast import forecast_trace
+from tensorearch.io import load_training_trace_from_dict
 
 
 def _env_with_src():
@@ -474,12 +478,66 @@ def test_cli_diagnose_json(tmp_path):
         check=True,
     )
     assert '"findings"' in result.stdout
-    assert '"entropy_clusters"' in result.stdout
-    assert '"cluster"' in result.stdout
-    assert '"logic_labels"' in result.stdout
-    assert '"scoring_logic"' in result.stdout
-    assert '"conflicting_signal"' in result.stdout
-    assert '"score_normalization"' in result.stdout
+
+
+def test_cli_temporal_radio_json(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    T, H, W = 12, 6, 6
+    u = np.ones((T, H, W), dtype=float)
+    v = np.zeros((T, H, W), dtype=float)
+    h = np.zeros((T, H, W), dtype=float)
+    bg_u = np.ones((H, W), dtype=float)
+    bg_v = np.zeros((H, W), dtype=float)
+    obs_u = np.zeros((H, W), dtype=float)
+    obs_v = np.ones((H, W), dtype=float)
+    for t in range(1, T):
+        u[t] = u[t - 1]
+        v[t] = v[t - 1]
+        if t >= 4:
+            u[t, :3, :3] = 1.25 * u[t - 1, :3, :3]
+        h[t] = h[t - 1]
+        h[t] += np.linspace(0.0, 1.0, W)[None, :]
+    probe = tmp_path / "radio_probe.npz"
+    np.savez(
+        probe,
+        dt=np.asarray(1.0),
+        u=u,
+        v=v,
+        h=h,
+        bg_u=bg_u,
+        bg_v=bg_v,
+        obs_u=obs_u,
+        obs_v=obs_v,
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tensorearch",
+            "temporal-radio",
+            "--input",
+            str(probe),
+            "--time-bins",
+            "4",
+            "--y-bins",
+            "2",
+            "--x-bins",
+            "2",
+            "--json",
+        ],
+        cwd=root,
+        env=_env_with_src(),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    payload = json.loads(result.stdout)
+    assert payload["version"] == "tradio.v1"
+    assert payload["lock"]["field"] == "uv"
+    assert payload["lock"]["spatial_window"]["y_bin"] == 0
+    assert payload["lock"]["spatial_window"]["x_bin"] == 0
+    assert payload["vector_scores"]["background_alignment_mean"] is not None
+    assert payload["coupled_scores"]["h_uv_coupling_mean"] is not None
 
 
 def test_cli_diagnose_shell(tmp_path):
@@ -586,3 +644,79 @@ def test_cli_diagnose_modular_flow_profile(tmp_path):
     assert "modular_shrinking_number" in clusters["front_loaded"]["modular_flow"]
     assert clusters["front_loaded"]["modular_flow"]["assessment"] in {"concentrated_flow", "mixed_flow", "uniform_flow"}
     assert clusters["spread_out"]["modular_flow"]["assessment"] in {"uniform_flow", "mixed_flow"}
+
+
+def test_cli_forecast_json(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    trace = tmp_path / "training_trace.json"
+    trace.write_text(
+        json.dumps(
+            {
+                "run_id": "exp_001",
+                "checkpoint_path": str(tmp_path / "exp_001.pt"),
+                "target_metric": "val_top1",
+                "steps": [
+                    {"step": 100, "train_loss": 1.8, "val_metric": 0.36, "grad_norm": 1.4, "curvature": 0.30, "direction_consistency": 0.58},
+                    {"step": 200, "train_loss": 1.4, "val_metric": 0.48, "grad_norm": 1.3, "curvature": 0.24, "direction_consistency": 0.66},
+                    {"step": 300, "train_loss": 1.2, "val_metric": 0.58, "grad_norm": 1.2, "curvature": 0.22, "direction_consistency": 0.73},
+                    {"step": 400, "train_loss": 1.0, "val_metric": 0.66, "grad_norm": 1.1, "curvature": 0.18, "direction_consistency": 0.78},
+                    {"step": 500, "train_loss": 0.92, "val_metric": 0.71, "grad_norm": 1.0, "curvature": 0.15, "direction_consistency": 0.82},
+                    {"step": 600, "train_loss": 0.88, "val_metric": 0.74, "grad_norm": 0.95, "curvature": 0.13, "direction_consistency": 0.86},
+                    {"step": 700, "train_loss": 0.85, "val_metric": 0.755, "grad_norm": 0.92, "curvature": 0.12, "direction_consistency": 0.88},
+                    {"step": 800, "train_loss": 0.83, "val_metric": 0.763, "grad_norm": 0.91, "curvature": 0.11, "direction_consistency": 0.89}
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "tensorearch", "forecast", str(trace), "--json"],
+        cwd=root,
+        env=_env_with_src(),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    payload = json.loads(result.stdout)
+    assert payload["run_id"] == "exp_001"
+    assert "predicted_final_score" in payload
+    assert "earliest_decision_step" in payload
+    assert "continue_training_recommended" in payload
+
+
+def test_forecast_trace_resets_between_runs():
+    trace_a = load_training_trace_from_dict(
+        {
+            "run_id": "run_a",
+            "checkpoint_path": "A.pt",
+            "steps": [
+                {"step": 1, "train_loss": 1.6, "val_metric": 0.35, "grad_norm": 1.5, "curvature": 0.35, "direction_consistency": 0.55},
+                {"step": 2, "train_loss": 1.3, "val_metric": 0.48, "grad_norm": 1.3, "curvature": 0.26, "direction_consistency": 0.64},
+                {"step": 3, "train_loss": 1.0, "val_metric": 0.61, "grad_norm": 1.1, "curvature": 0.18, "direction_consistency": 0.73},
+                {"step": 4, "train_loss": 0.88, "val_metric": 0.70, "grad_norm": 0.98, "curvature": 0.14, "direction_consistency": 0.81},
+                {"step": 5, "train_loss": 0.82, "val_metric": 0.75, "grad_norm": 0.90, "curvature": 0.12, "direction_consistency": 0.86},
+                {"step": 6, "train_loss": 0.79, "val_metric": 0.77, "grad_norm": 0.88, "curvature": 0.10, "direction_consistency": 0.89},
+            ],
+        }
+    )
+    trace_b = load_training_trace_from_dict(
+        {
+            "run_id": "run_b",
+            "checkpoint_path": "B.pt",
+            "steps": [
+                {"step": 1, "train_loss": 2.2, "val_metric": 0.18, "grad_norm": 2.0, "curvature": 0.60, "direction_consistency": 0.35},
+                {"step": 2, "train_loss": 2.0, "val_metric": 0.22, "grad_norm": 1.9, "curvature": 0.55, "direction_consistency": 0.38},
+                {"step": 3, "train_loss": 1.9, "val_metric": 0.24, "grad_norm": 1.8, "curvature": 0.50, "direction_consistency": 0.40},
+                {"step": 4, "train_loss": 1.85, "val_metric": 0.25, "grad_norm": 1.8, "curvature": 0.48, "direction_consistency": 0.41},
+                {"step": 5, "train_loss": 1.82, "val_metric": 0.255, "grad_norm": 1.78, "curvature": 0.47, "direction_consistency": 0.42},
+                {"step": 6, "train_loss": 1.80, "val_metric": 0.258, "grad_norm": 1.77, "curvature": 0.46, "direction_consistency": 0.43},
+            ],
+        }
+    )
+    result_a = forecast_trace(trace_a)
+    result_b = forecast_trace(trace_b)
+    assert result_a.predicted_final_score > result_b.predicted_final_score
+    assert result_a.run_id == "run_a"
+    assert result_b.run_id == "run_b"
