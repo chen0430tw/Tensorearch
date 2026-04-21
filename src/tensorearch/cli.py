@@ -15,6 +15,7 @@ from .report import export_comparison_report, export_forecast_report, export_ins
 from .schema import Intervention
 from .space import analyze_source_file, space_report, space_report_json
 from .temporal import analyze_time_series_file, temporal_report, temporal_report_json
+from .temporal_couple import analyze_temporal_couple_file, temporal_couple_report, temporal_couple_report_json
 from .temporal_radio import analyze_temporal_radio_file, temporal_radio_report, temporal_radio_report_json
 
 
@@ -125,6 +126,19 @@ def main() -> None:
     tradio_p.add_argument("--x-bins", type=int, default=16, help="number of coarse spatial bins in x")
     tradio_p.add_argument("--output", default="")
     tradio_p.add_argument("--json", action="store_true", help="emit machine-readable JSON output")
+
+    tcouple_p = sub.add_parser(
+        "temporal-couple",
+        help="diagnose h->uv coupling (geostrophic balance) on a rollout; pair-specific follow-up to temporal-radio",
+    )
+    tcouple_p.add_argument("--input", required=True, help=".npz or .json file containing h/u/v and optional bg/obs refs")
+    tcouple_p.add_argument("--dt", type=float, default=None, help="physical timestep (default: read from file)")
+    tcouple_p.add_argument("--case-id", default="", help="override case identifier")
+    tcouple_p.add_argument("--time-bins", type=int, default=8, help="number of coarse temporal bins")
+    tcouple_p.add_argument("--y-bins", type=int, default=12, help="number of coarse spatial bins in y")
+    tcouple_p.add_argument("--x-bins", type=int, default=16, help="number of coarse spatial bins in x")
+    tcouple_p.add_argument("--output", default="")
+    tcouple_p.add_argument("--json", action="store_true", help="emit machine-readable JSON output")
 
     sub.add_parser("help", help="show detailed usage guide")
 
@@ -266,6 +280,28 @@ def main() -> None:
                 print(f"[verbose] wrote report={args.output}")
         return
 
+    if args.cmd == "temporal-couple":
+        if args.verbose:
+            print(
+                f"[verbose] temporal-couple input={args.input} dt={args.dt} case_id={args.case_id or '(auto)'} "
+                f"time_bins={args.time_bins} y_bins={args.y_bins} x_bins={args.x_bins}"
+            )
+        report = analyze_temporal_couple_file(
+            args.input,
+            dt=args.dt,
+            case_id=args.case_id,
+            time_bins=args.time_bins,
+            y_bins=args.y_bins,
+            x_bins=args.x_bins,
+        )
+        text = temporal_couple_report_json(report) if args.json else temporal_couple_report(report)
+        print(text)
+        if args.output:
+            Path(args.output).write_text(text, encoding="utf-8")
+            if args.verbose:
+                print(f"[verbose] wrote report={args.output}")
+        return
+
     if args.cmd == "help":
         _print_help()
         return
@@ -309,6 +345,12 @@ COMMANDS
             Scan vector-field anomalies, lock onto the strongest channel, and emit
             reversible gate coordinates for follow-up
             tensorearch temporal-radio --input rollout_uv.npz [--json]
+
+  temporal-couple
+            Targeted h->uv coupling diagnosis (geostrophic balance). Use after
+            temporal-radio flags a wind-direction anomaly to attribute it to
+            h-gradient decoupling vs anti-geostrophic flow vs weak coupling.
+            tensorearch temporal-couple --input rollout_huv.npz [--json]
 
   export    Write inspect or compare results to a file
             tensorearch export --mode inspect --left trace.json --output out.json [--json]

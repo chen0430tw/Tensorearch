@@ -720,3 +720,58 @@ def test_forecast_trace_resets_between_runs():
     assert result_a.predicted_final_score > result_b.predicted_final_score
     assert result_a.run_id == "run_a"
     assert result_b.run_id == "run_b"
+
+
+def test_cli_temporal_couple_json(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    T, H, W = 16, 8, 8
+    rng = np.random.default_rng(0)
+    h = np.zeros((T, H, W), dtype=float)
+    u = np.zeros_like(h)
+    v = np.zeros_like(h)
+    yy, xx = np.mgrid[0:H, 0:W]
+    bump = np.exp(-((yy - 1.0) ** 2 + (xx - 1.0) ** 2) / 2.5)
+    for t in range(T):
+        h[t] = 0.05 * t * bump + 0.01 * rng.standard_normal(h[t].shape)
+        gy_t, gx_t = np.gradient(h[t])
+        mag = np.sqrt(gx_t ** 2 + gy_t ** 2) + 1e-6
+        mask = (yy < 3) & (xx < 3)
+        u[t] = np.where(mask,  gy_t / mag, 0.01 * rng.standard_normal(h[t].shape))
+        v[t] = np.where(mask, -gx_t / mag, 0.01 * rng.standard_normal(h[t].shape))
+    probe = tmp_path / "couple_probe.npz"
+    np.savez(probe, dt=np.asarray(1.0), h=h, u=u, v=v)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tensorearch",
+            "temporal-couple",
+            "--input",
+            str(probe),
+            "--time-bins",
+            "4",
+            "--y-bins",
+            "2",
+            "--x-bins",
+            "2",
+            "--json",
+        ],
+        cwd=root,
+        env=_env_with_src(),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    payload = json.loads(result.stdout)
+    assert payload["version"] == "trcouple.v1"
+    assert payload["meta"]["pair"] == ["h", "uv"]
+    # Lock should land in the top-left bump region.
+    assert payload["lock"]["spatial_window"]["y_bin"] == 0
+    assert payload["lock"]["spatial_window"]["x_bin"] == 0
+    assert payload["lock"]["verdict"]["kind"] == "anti_geostrophic"
+    # Core coupling metrics must be present and non-null.
+    cs = payload["coupling_scores"]
+    for key in ("h_uv_coupling_mean", "h_uv_anti_geo_fraction",
+                "grad_growth_mean", "geostrophic_coherence_mean"):
+        assert cs[key] is not None, f"coupling_scores.{key} is None"
