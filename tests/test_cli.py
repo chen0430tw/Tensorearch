@@ -775,3 +775,49 @@ def test_cli_temporal_couple_json(tmp_path):
     for key in ("h_uv_coupling_mean", "h_uv_anti_geo_fraction",
                 "grad_growth_mean", "geostrophic_coherence_mean"):
         assert cs[key] is not None, f"coupling_scores.{key} is None"
+
+
+def test_cli_temporal_balance_json(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    T, H, W = 8, 6, 8
+    # Potential = +x ramp; response aligned with rotated_grad → verdict
+    # should be potential_consistent.
+    x = np.arange(W, dtype=float)
+    y = np.arange(H, dtype=float)
+    YY, XX = np.meshgrid(y, x, indexing="ij")
+    pot = np.broadcast_to(XX[None, :, :], (T, H, W)).copy()
+    gy = np.gradient(pot, axis=1)
+    gx = np.gradient(pot, axis=2)
+    u = -gy
+    v =  gx
+    probe = tmp_path / "balance_probe.npz"
+    np.savez(probe, h=pot, u=u, v=v)
+
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "tensorearch",
+            "temporal-balance",
+            "--input", str(probe),
+            "--potential", "h",
+            "--response-u", "u",
+            "--response-v", "v",
+            "--operator", "rotated_gradient",
+            "--operator-scale", "1.0",
+            "--time-bins", "4",
+            "--y-bins", "3",
+            "--x-bins", "4",
+            "--json",
+        ],
+        cwd=root, env=_env_with_src(),
+        capture_output=True, text=True, check=True,
+    )
+    payload = json.loads(result.stdout)
+    assert payload["version"] == "trbalance_report.v1"
+    g = payload["global"]
+    for key in ("alignment_potential_only_mean", "alignment_static_only_mean",
+                "alignment_combined_mean", "speed_potential_only_mean",
+                "speed_static_only_mean", "speed_combined_mean",
+                "consistency_gap_mean", "best_mode", "verdict"):
+        assert key in g, f"global.{key} missing"
+    assert g["verdict"] == "potential_consistent"
+    assert g["alignment_potential_only_mean"] > 0.95

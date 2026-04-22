@@ -15,6 +15,12 @@ from .report import export_comparison_report, export_forecast_report, export_ins
 from .schema import Intervention
 from .space import analyze_source_file, space_report, space_report_json
 from .temporal import analyze_time_series_file, temporal_report, temporal_report_json
+from .temporal_balance import (
+    BalanceOperator, BalanceSpec, StaticForcingSpec,
+    analyze_temporal_balance_file,
+    load_spec_from_file,
+    temporal_balance_report, temporal_balance_report_json,
+)
 from .temporal_couple import analyze_temporal_couple_file, temporal_couple_report, temporal_couple_report_json
 from .temporal_radio import analyze_temporal_radio_file, temporal_radio_report, temporal_radio_report_json
 
@@ -139,6 +145,37 @@ def main() -> None:
     tcouple_p.add_argument("--x-bins", type=int, default=16, help="number of coarse spatial bins in x")
     tcouple_p.add_argument("--output", default="")
     tcouple_p.add_argument("--json", action="store_true", help="emit machine-readable JSON output")
+
+    tbal_p = sub.add_parser(
+        "temporal-balance",
+        help="generic potential/response/static-forcing balance diagnostic (not TD-specific)",
+    )
+    tbal_p.add_argument("--input", required=True, help=".npz or .json file with potential/response/static arrays")
+    tbal_p.add_argument("--spec", default="", help="optional trbalance.v1 JSON spec; other CLI flags override")
+    tbal_p.add_argument("--potential", default="h", help="array key for the potential scalar field")
+    tbal_p.add_argument("--response-u", default="u", help="array key for response u-component")
+    tbal_p.add_argument("--response-v", default="v", help="array key for response v-component")
+    tbal_p.add_argument(
+        "--static",
+        action="append",
+        default=[],
+        metavar="KEY:WEIGHT",
+        help="static forcing field and its weight, e.g. --static topo:0.18 (repeatable)",
+    )
+    tbal_p.add_argument("--operator", default="rotated_gradient",
+                        choices=["gradient", "rotated_gradient"],
+                        help="balance operator applied to each scalar field")
+    tbal_p.add_argument("--operator-scale", type=float, default=1.0,
+                        help="multiplicative scale on the operator output (e.g. g/f for geostrophic)")
+    tbal_p.add_argument("--dx", type=float, default=1.0, help="grid spacing in x")
+    tbal_p.add_argument("--dy", type=float, default=1.0, help="grid spacing in y")
+    tbal_p.add_argument("--dt", type=float, default=1.0, help="physical timestep (informational)")
+    tbal_p.add_argument("--case-id", default="")
+    tbal_p.add_argument("--time-bins", type=int, default=8)
+    tbal_p.add_argument("--y-bins", type=int, default=12)
+    tbal_p.add_argument("--x-bins", type=int, default=16)
+    tbal_p.add_argument("--output", default="")
+    tbal_p.add_argument("--json", action="store_true", help="emit machine-readable JSON output")
 
     sub.add_parser("help", help="show detailed usage guide")
 
@@ -302,6 +339,53 @@ def main() -> None:
                 print(f"[verbose] wrote report={args.output}")
         return
 
+    if args.cmd == "temporal-balance":
+        # Compose spec: start from --spec file if given, then let explicit
+        # CLI flags override. A bare --input run without --spec uses all
+        # CLI defaults (h / u / v, rotated_gradient, unit scale).
+        if args.spec:
+            spec = load_spec_from_file(args.spec)
+        else:
+            spec = BalanceSpec()
+        # CLI overrides applied (only when the user actually passed them —
+        # but since argparse always sets defaults, we just accept the
+        # CLI-provided values as the authoritative choice).
+        spec.case_id       = args.case_id or spec.case_id
+        spec.dt            = args.dt
+        spec.dx            = args.dx
+        spec.dy            = args.dy
+        spec.potential_key = args.potential
+        spec.response_u_key = args.response_u
+        spec.response_v_key = args.response_v
+        spec.operator = BalanceOperator(kind=args.operator, scale=args.operator_scale)
+        spec.analysis.time_bins = args.time_bins
+        spec.analysis.y_bins    = args.y_bins
+        spec.analysis.x_bins    = args.x_bins
+        if args.static:
+            # `--static` flags replace any static list from --spec so the
+            # CLI stays authoritative when both are given.
+            spec.static_forcings = []
+            for entry in args.static:
+                if ":" in entry:
+                    key, w = entry.split(":", 1)
+                    spec.static_forcings.append(StaticForcingSpec(key=key, weight=float(w)))
+                else:
+                    spec.static_forcings.append(StaticForcingSpec(key=entry, weight=1.0))
+        if args.verbose:
+            print(
+                f"[verbose] temporal-balance input={args.input} op={args.operator} "
+                f"potential={spec.potential_key} statics="
+                f"{[(s.key, s.weight) for s in spec.static_forcings]}"
+            )
+        report = analyze_temporal_balance_file(args.input, spec)
+        text = temporal_balance_report_json(report) if args.json else temporal_balance_report(report)
+        print(text)
+        if args.output:
+            Path(args.output).write_text(text, encoding="utf-8")
+            if args.verbose:
+                print(f"[verbose] wrote report={args.output}")
+        return
+
     if args.cmd == "help":
         _print_help()
         return
@@ -351,6 +435,16 @@ COMMANDS
             temporal-radio flags a wind-direction anomaly to attribute it to
             h-gradient decoupling vs anti-geostrophic flow vs weak coupling.
             tensorearch temporal-couple --input rollout_huv.npz [--json]
+
+  temporal-balance
+            Generic potential/response/static-forcing balance diagnostic. Given
+            a potential scalar, a response vector field, and optional static
+            forcings, compares three theoretical balance modes (potential_only,
+            static_only, combined) and flags when adding a static term makes
+            the response LESS consistent (static_forcing_overrides_potential_balance).
+            tensorearch temporal-balance --input probe.npz \\
+                --potential h --response-u u --response-v v \\
+                --static topo:0.18 --operator rotated_gradient --json
 
   export    Write inspect or compare results to a file
             tensorearch export --mode inspect --left trace.json --output out.json [--json]
