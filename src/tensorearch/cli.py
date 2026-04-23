@@ -15,15 +15,10 @@ from .io import load_graph_from_json, load_training_trace_from_json
 from .report import export_comparison_report, export_forecast_report, export_inspect_report, export_payload
 from .schema import Intervention
 from .space import analyze_source_file, space_report, space_report_json
-from .temporal import analyze_time_series_file, temporal_report, temporal_report_json
-from .temporal_balance import (
-    BalanceOperator, BalanceSpec, StaticForcingSpec,
-    analyze_temporal_balance_file,
-    load_spec_from_file,
-    temporal_balance_report, temporal_balance_report_json,
-)
-from .temporal_couple import analyze_temporal_couple_file, temporal_couple_report, temporal_couple_report_json
-from .temporal_radio import analyze_temporal_radio_file, temporal_radio_report, temporal_radio_report_json
+# NOTE: the temporal* modules are imported lazily inside their handler blocks.
+# They depend on numpy and on environments without it (or with broken numpy
+# installs, e.g. cluster login nodes hitting OpenBLAS thread limits) the
+# forecast/zombie/inspect/space/diagnose subcommands should still work.
 
 
 def _load_graph(path: str):
@@ -298,6 +293,7 @@ def main() -> None:
         return
 
     if args.cmd == "temporal":
+        from .temporal import analyze_time_series_file, temporal_report, temporal_report_json
         if args.verbose:
             print(f"[verbose] temporal input={args.input} key={args.key or '(auto)'} "
                   f"dt={args.dt} growth={args.growth} phase_tol={args.phase_tol}")
@@ -314,6 +310,7 @@ def main() -> None:
         return
 
     if args.cmd == "temporal-radio":
+        from .temporal_radio import analyze_temporal_radio_file, temporal_radio_report, temporal_radio_report_json
         if args.verbose:
             print(
                 f"[verbose] temporal-radio input={args.input} dt={args.dt} case_id={args.case_id or '(auto)'} "
@@ -336,6 +333,7 @@ def main() -> None:
         return
 
     if args.cmd == "temporal-couple":
+        from .temporal_couple import analyze_temporal_couple_file, temporal_couple_report, temporal_couple_report_json
         if args.verbose:
             print(
                 f"[verbose] temporal-couple input={args.input} dt={args.dt} case_id={args.case_id or '(auto)'} "
@@ -358,6 +356,12 @@ def main() -> None:
         return
 
     if args.cmd == "temporal-balance":
+        from .temporal_balance import (
+            BalanceOperator, BalanceSpec, StaticForcingSpec,
+            analyze_temporal_balance_file,
+            load_spec_from_file,
+            temporal_balance_report, temporal_balance_report_json,
+        )
         # Compose spec: start from --spec file if given, then let explicit
         # CLI flags override. A bare --input run without --spec uses all
         # CLI defaults (h / u / v, rotated_gradient, unit scale).
