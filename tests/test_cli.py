@@ -686,6 +686,62 @@ def test_cli_forecast_json(tmp_path):
     assert "continue_training_recommended" in payload
 
 
+def test_cli_zombie_json(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    trace = tmp_path / "nan_trace.json"
+    trace.write_text(
+        json.dumps(
+            {
+                "run_id": "nan_run",
+                "checkpoint_path": "",
+                "target_metric": "val_metric",
+                "steps": [
+                    {"step": 1, "train_loss": 1.5, "val_metric": 0.30, "grad_norm": 1.2, "curvature": 0.20, "direction_consistency": 0.60},
+                    {"step": 2, "train_loss": 1.3, "val_metric": 0.40, "grad_norm": 1.1, "curvature": 0.18, "direction_consistency": 0.65},
+                    {"step": 3, "train_loss": float("nan"), "val_metric": 0.42, "grad_norm": 1.0, "curvature": 0.16, "direction_consistency": 0.70},
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+            allow_nan=True,
+        ),
+        encoding="utf-8",
+    )
+    env = _env_with_src()
+    env["PYTHONIOENCODING"] = "utf-8"
+    result = subprocess.run(
+        [sys.executable, "-m", "tensorearch", "zombie", str(trace), "--json"],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    )
+    payload = json.loads(result.stdout)
+    assert payload["severity"] == "ZOMBIE"
+    assert payload["zombie_class"] == "NAN_HOST"
+    assert payload["infection_step"] == 3
+
+
+def test_forecast_signal_poor_floors_confidence():
+    trace = load_training_trace_from_dict(
+        {
+            "run_id": "signal_poor_run",
+            "checkpoint_path": "",
+            "steps": [
+                {"step": i, "train_loss": 10.0 - 0.05 * i, "val_metric": 0.0, "grad_norm": 0.0, "curvature": 0.0, "direction_consistency": 1.0}
+                for i in range(1, 12)
+            ],
+        }
+    )
+    result = forecast_trace(trace)
+    assert result.metadata["signal_quality"]["poor"] is True
+    assert set(result.metadata["signal_quality"]["missing"]) == {"val_metric", "grad_norm", "curvature"}
+    assert result.confidence <= 0.25
+    assert "signal-poor" in result.reason
+
+
 def test_forecast_trace_resets_between_runs():
     trace_a = load_training_trace_from_dict(
         {

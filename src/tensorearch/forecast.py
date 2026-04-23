@@ -160,6 +160,46 @@ def _saturation_index(values: list[float]) -> float:
     return _clamp(1.0 - _safe_ratio(late, early))
 
 
+_REQUIRED_SIGNAL_FIELDS = ("val_metric", "grad_norm", "curvature")
+
+
+def _detect_signal_poverty(trace: TrainingTrace) -> dict[str, object]:
+    """Flag traces where required forecast signals are absent (all-zero placeholders).
+
+    The heuristic predictor leans heavily on val_metric (current-metric anchor),
+    grad_norm and curvature (uncertainty / state propagation). When a caller
+    feeds zeros for these — typically because the upstream training script only
+    logs train_loss + step — the predicted_final_score becomes a function of
+    those zero placeholders rather than real signal, and the number is not
+    trustworthy. Detect that here so the predictor can floor confidence and
+    surface the limitation in metadata.
+
+    Reports each required field with mean and absolute-max; any field whose
+    absolute max is below epsilon across the entire trace is considered
+    missing. Train_loss is intentionally NOT a required field — the layer-1
+    zombie gate operates on train_loss alone, and a forecast on a single
+    monotone-loss signal can still produce useful relative signal even if it
+    cannot be calibrated to an absolute score.
+    """
+    epsilon = 1e-9
+    if not trace.steps:
+        return {"poor": False, "missing": [], "field_stats": {}}
+    field_stats: dict[str, dict[str, float]] = {}
+    missing: list[str] = []
+    for field_name in _REQUIRED_SIGNAL_FIELDS:
+        values = [getattr(s, field_name, 0.0) for s in trace.steps]
+        absmax = max(abs(v) for v in values) if values else 0.0
+        mean = sum(values) / len(values) if values else 0.0
+        field_stats[field_name] = {"absmax": absmax, "mean": mean}
+        if absmax < epsilon:
+            missing.append(field_name)
+    return {
+        "poor": bool(missing),
+        "missing": missing,
+        "field_stats": field_stats,
+    }
+
+
 def _existing_checkpoint_signature(path: str) -> tuple[float, int]:
     if not path:
         return (0.0, 0)
@@ -350,6 +390,9 @@ def _run_heuristic_forecast(trace: TrainingTrace, config: ForecastConfig = DEFAU
             metadata={"target_metric": trace.target_metric},
         )
 
+    signal_quality = _detect_signal_poverty(trace)
+    confidence_ceiling = 0.25 if signal_quality["poor"] else 1.0
+
     reset_run_state(trace.run_id)
     z_prev = _zero_state()
     prev_fitness = 0.0
@@ -391,7 +434,10 @@ def _run_heuristic_forecast(trace: TrainingTrace, config: ForecastConfig = DEFAU
             last_fitness = fitness
             last_gain = gain
 
-            if idx >= max(config.min_prefix_steps, config.delta_steps + 1):
+            if (
+                idx >= max(config.min_prefix_steps, config.delta_steps + 1)
+                and not signal_quality["poor"]
+            ):
                 previous_prediction = _PREDICTION_CACHE[trace.run_id][-1 - config.delta_steps]
                 prediction_shift = abs(prediction - previous_prediction)
                 if (
@@ -403,7 +449,7 @@ def _run_heuristic_forecast(trace: TrainingTrace, config: ForecastConfig = DEFAU
                         run_id=trace.run_id,
                         predicted_final_score=prediction,
                         uncertainty=uncertainty,
-                        confidence=confidence,
+                        confidence=min(confidence, confidence_ceiling),
                         earliest_decision_step=step.step,
                         continue_training_recommended=False,
                         stability=stability,
@@ -414,26 +460,35 @@ def _run_heuristic_forecast(trace: TrainingTrace, config: ForecastConfig = DEFAU
                             "target_metric": trace.target_metric,
                             "decision_index": idx,
                             "prediction_shift": round(prediction_shift, 6),
+                            "signal_quality": signal_quality,
                         },
                     )
 
             z_prev = z_t
             prev_fitness = fitness
 
+        reason = "signal not yet stable enough for early decision"
+        if signal_quality["poor"]:
+            reason = (
+                "predictor signal-poor: required fields "
+                f"{signal_quality['missing']} are all-zero across the trace; "
+                "predicted_final_score is not trustworthy"
+            )
         return ForecastResult(
             run_id=trace.run_id,
             predicted_final_score=last_prediction,
             uncertainty=last_uncertainty,
-            confidence=last_confidence,
+            confidence=min(last_confidence, confidence_ceiling),
             earliest_decision_step=trace.steps[-1].step,
             continue_training_recommended=True,
             stability=last_stability,
             growth_fitness=last_fitness,
             growth_gain=last_gain,
-            reason="signal not yet stable enough for early decision",
+            reason=reason,
             metadata={
                 "target_metric": trace.target_metric,
                 "decision_index": len(trace.steps),
+                "signal_quality": signal_quality,
             },
         )
     finally:

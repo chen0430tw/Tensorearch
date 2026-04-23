@@ -9,6 +9,7 @@ from .compare import comparison_report, comparison_report_json
 from .demo import demo_payload, demo_report, demo_report_json
 from .diagnose import analyze_logic_file, diagnose_report, diagnose_report_json
 from .forecast import forecast_report, forecast_report_json
+from .zombie import zombie_report, zombie_report_json
 from .intervention import apply_intervention
 from .io import load_graph_from_json, load_training_trace_from_json
 from .report import export_comparison_report, export_forecast_report, export_inspect_report, export_payload
@@ -104,6 +105,11 @@ def main() -> None:
     forecast_p.add_argument("trace")
     forecast_p.add_argument("--output", default="")
     forecast_p.add_argument("--json", action="store_true", help="emit machine-readable JSON output")
+
+    zombie_p = sub.add_parser("zombie", help="layer-1 sanity gate: is this training run still alive, or producing zombie numbers?")
+    zombie_p.add_argument("trace")
+    zombie_p.add_argument("--output", default="")
+    zombie_p.add_argument("--json", action="store_true", help="emit machine-readable JSON output")
 
     temporal_p = sub.add_parser("temporal",
         help="detect CFL/dispersion instabilities in a (T, *spatial) tensor time series")
@@ -275,6 +281,18 @@ def main() -> None:
         print(report)
         if args.output:
             export_forecast_report(trace, args.output, as_json=args.json)
+            if args.verbose:
+                print(f"[verbose] wrote report={args.output}")
+        return
+
+    if args.cmd == "zombie":
+        trace = _load_training_trace(args.trace)
+        if args.verbose:
+            print(f"[verbose] zombie-checking trace={args.trace} run_id={trace.run_id}")
+        report = zombie_report_json(trace) if args.json else zombie_report(trace)
+        print(report)
+        if args.output:
+            Path(args.output).write_text(report, encoding="utf-8")
             if args.verbose:
                 print(f"[verbose] wrote report={args.output}")
         return
