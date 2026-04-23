@@ -83,6 +83,15 @@ class TrainingStep:
     grad_norm: float = 0.0
     curvature: float = 0.0
     direction_consistency: float = 0.0
+    # Contract metadata (Codex review v4): the trace writer should describe what
+    # kind of value it put into train_loss / grad_norm so downstream consumers
+    # (zombie / forecast / contract validator) don't get fooled by display
+    # smoothing or pre-clip explosions that the optimizer already neutralized.
+    train_loss_kind: str = "unknown"        # "raw_step_mean" | "display_smoothed" | "unknown"
+    val_metric_observed: bool = False       # False if val_metric is a placeholder/stale
+    grad_norm_kind: str = "unknown"         # "pre_clip" | "post_clip" | "unknown"
+    post_clip_grad_norm: float = 0.0        # 0 if not captured
+    gradient_clip: float = 0.0              # clip threshold in effect this step (0 = unknown)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -107,4 +116,12 @@ class ForecastResult:
     growth_fitness: float
     growth_gain: float
     reason: str
+    # Stop-window outputs (Codex review v4): rather than committing to a
+    # single "stop here" step, the forecaster also reports a window of
+    # acceptable stop points and a recommended one inside that window.
+    # All three are 0 when the forecaster is not yet confident enough to
+    # recommend stopping (in that case the caller should keep training).
+    decision_window_start: int = 0   # earliest step where stop is safe
+    decision_window_end: int = 0     # latest step where further training is unlikely to improve
+    recommended_stop_step: int = 0   # forecaster's pick inside the window
     metadata: dict[str, Any] = field(default_factory=dict)

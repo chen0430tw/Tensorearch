@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from .schema import TrainingStep, TrainingTrace
+from .training_contract import validate_trace
 
 
 ZombieClass = Literal[
@@ -56,8 +57,9 @@ class ZombieConfig:
     frozen_delta_threshold: float = 1e-5
     frozen_min_steps: int = 4
 
-    # 梯度范数过大 = 爆炸尸体
-    inf_grad_threshold: float = 50.0
+    # Legacy 单点阈值: pre-clip grad norm > 此值即触发的旧规则。新版默认抬高
+    # 到 1000 + 配合下面的组合规则; 设这么高相当于"几乎不会单独触发"。
+    inf_grad_threshold: float = 1000.0
 
     # 梯度范数过小且 loss 不动 = 冻僵肢体
     dead_grad_threshold: float = 1e-6
@@ -70,6 +72,19 @@ class ZombieConfig:
 
     # 至少多少步才能做丧尸判定
     min_observation_steps: int = 3
+
+    # ── 组合式爆炸检测 (Codex review) ────────────────────────────────────
+    # pre-clip grad norm 单独大不算 INFECTED。要 INFECTED 需要：
+    #   * 优先路径 (有 post-clip + gradient_clip)：post_clip 大于 clip * factor
+    #     持续 N 步 + 同时 loss 没改善 → INFECTED
+    #   * 退化路径 (只有 pre-clip)：pre_clip > 绝对阈值 + > spike_ratio × 近期中位
+    #     持续 N 步 + loss 没改善 → INFECTED
+    # 其他情况：高 pre-clip 只升级到 SUSPECT, 不直接 INFECTED。
+    explosive_preclip_abs_threshold: float = 1000.0
+    explosive_preclip_spike_ratio: float = 4.0
+    explosive_persist_steps: int = 3
+    explosive_postclip_factor: float = 1.2
+    explosive_loss_window: int = 5  # 检查最近 N 步 loss 是否在改善
 
 
 DEFAULT_ZOMBIE_CONFIG = ZombieConfig()
@@ -84,6 +99,7 @@ class ZombieReport:
     reason: str
     evidence: dict = field(default_factory=dict)
     recommendation: str = ""
+    contract: dict = field(default_factory=dict)   # trace_contract validator output
 
 
 def _is_nan(x: float) -> bool:
@@ -142,13 +158,119 @@ def _detect_frozen(steps: list[TrainingStep], config: ZombieConfig) -> tuple[int
     return None
 
 
-def _detect_explosive(steps: list[TrainingStep], config: ZombieConfig) -> tuple[int, dict] | None:
-    """检测爆炸尸体：梯度爆炸超过阈值。"""
+def _median(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    s = sorted(values)
+    n = len(s)
+    if n % 2 == 1:
+        return s[n // 2]
+    return (s[n // 2 - 1] + s[n // 2]) / 2.0
+
+
+def _loss_improving(losses: list[float]) -> bool:
+    """True if losses show improvement over the window (last <= mean of first half)."""
+    if len(losses) < 2:
+        return True  # not enough data, assume OK
+    half = len(losses) // 2
+    if half == 0:
+        return True
+    early = losses[:half]
+    late = losses[half:]
+    early_mean = sum(early) / len(early)
+    late_mean = sum(late) / len(late)
+    return late_mean < early_mean  # decreasing is improving
+
+
+def _detect_explosive(steps: list[TrainingStep], config: ZombieConfig) -> tuple[int, str, dict] | None:
+    """组合式爆炸检测。
+
+    返回 (infection_step, severity, evidence) 或 None。severity 可能是
+    "INFECTED" (满足完整组合规则) 或 "SUSPECT" (单点高 pre-clip 但未通过组合判定)。
+
+    优先路径 (post-clip 已知)：
+      post_clip_grad_norm > gradient_clip * postclip_factor 持续 N 步 +
+      最近 N 步 loss 没改善 → INFECTED
+
+    退化路径 (只有 pre-clip)：
+      grad_norm > abs_threshold AND > spike_ratio × recent_median 持续 N 步 +
+      最近 loss 没改善 → INFECTED
+
+    单点高 pre-clip：legacy inf_grad_threshold 命中但其他条件不齐 → SUSPECT
+    """
+    n = len(steps)
+    if n == 0:
+        return None
+
+    persist = max(1, config.explosive_persist_steps)
+    win = max(2, config.explosive_loss_window)
+
+    # 优先路径：post-clip + clip threshold 都有
+    for end in range(persist, n + 1):
+        window = steps[end - persist:end]
+        post_clip_vals = [s.post_clip_grad_norm for s in window]
+        clip_vals = [s.gradient_clip for s in window]
+        # 必须每步都有 post-clip + clip > 0
+        if all(v > 0 for v in clip_vals) and all(_is_finite(v) for v in post_clip_vals):
+            triggered = all(
+                pc > clip * config.explosive_postclip_factor
+                for pc, clip in zip(post_clip_vals, clip_vals)
+            )
+            if triggered:
+                # 检查 loss 是否在恶化
+                loss_window = [
+                    s.train_loss for s in steps[max(0, end - win):end]
+                    if _is_finite(s.train_loss)
+                ]
+                if not _loss_improving(loss_window):
+                    last = window[-1]
+                    return last.step, "INFECTED", {
+                        "rule": "post_clip_combined",
+                        "post_clip_grad_norm": round(last.post_clip_grad_norm, 4),
+                        "gradient_clip": round(last.gradient_clip, 4),
+                        "threshold_factor": config.explosive_postclip_factor,
+                        "persist_steps": persist,
+                        "loss_improving": False,
+                    }
+
+    # 退化路径：只有 pre-clip。需要 abs > threshold + > ratio × median + persist + loss not improving
+    finite_grads = [s.grad_norm for s in steps if _is_finite(s.grad_norm)]
+    for end in range(persist, n + 1):
+        window = steps[end - persist:end]
+        pre_clip_vals = [s.grad_norm for s in window]
+        if not all(_is_finite(v) for v in pre_clip_vals):
+            continue
+        if not all(v > config.explosive_preclip_abs_threshold for v in pre_clip_vals):
+            continue
+        # spike 比对：跟全程 median 比 (避免被自己拉高)
+        med = _median(finite_grads[:max(1, end - persist)] or finite_grads)
+        if med <= 0 or any(v < med * config.explosive_preclip_spike_ratio for v in pre_clip_vals):
+            continue
+        loss_window = [
+            s.train_loss for s in steps[max(0, end - win):end]
+            if _is_finite(s.train_loss)
+        ]
+        if _loss_improving(loss_window):
+            continue  # loss 在改善, 即使梯度大也不算 zombie
+        last = window[-1]
+        return last.step, "INFECTED", {
+            "rule": "pre_clip_combined",
+            "grad_norm": round(last.grad_norm, 4),
+            "abs_threshold": config.explosive_preclip_abs_threshold,
+            "recent_median": round(med, 4),
+            "spike_ratio": config.explosive_preclip_spike_ratio,
+            "persist_steps": persist,
+            "loss_improving": False,
+        }
+
+    # SUSPECT 路径：legacy 单点超 inf_grad_threshold 但组合判定没过
     for s in steps:
         if _is_finite(s.grad_norm) and s.grad_norm > config.inf_grad_threshold:
-            return s.step, {
-                "grad_norm": s.grad_norm,
+            return s.step, "SUSPECT", {
+                "rule": "legacy_single_point",
+                "grad_norm": round(s.grad_norm, 4),
                 "threshold": config.inf_grad_threshold,
+                "note": "高 pre-clip 但未触发组合规则; 可能是 transformer 早期未 warmup 的正常爆梯度, 已被 clipper 处理。建议升级 trace 写 post_clip_grad_norm + gradient_clip 以获得更准确判定。",
             }
     return None
 
@@ -214,11 +336,19 @@ def _detect_drift_phase(steps: list[TrainingStep], config: ZombieConfig) -> tupl
 
 
 def assess_zombie(trace: TrainingTrace, config: ZombieConfig = DEFAULT_ZOMBIE_CONFIG) -> ZombieReport:
-    """评估训练 run 的生命状态。
+    """评估训练 run 的生命状态。同时把 trace_contract 验证结果挂到 report.contract。"""
+    contract = validate_trace(trace).to_dict()
+    report = _assess_zombie_inner(trace, config)
+    report.contract = contract
+    return report
+
+
+def _assess_zombie_inner(trace: TrainingTrace, config: ZombieConfig) -> ZombieReport:
+    """评估训练 run 的生命状态 (不含 contract 检查, 由 wrapper 注入)。
 
     按严重度依次检测：
       1. NaN / Inf 污染 → ZOMBIE
-      2. 梯度爆炸 → INFECTED
+      2. 梯度爆炸 → INFECTED (组合规则) / SUSPECT (单点 legacy)
       3. 冻僵 → INFECTED
       4. 假平台 → SUSPECT
       5. 灵魂分离 → SUSPECT
@@ -267,18 +397,47 @@ def assess_zombie(trace: TrainingTrace, config: ZombieConfig = DEFAULT_ZOMBIE_CO
             evidence={"steps_observed": len(trace.steps)},
         )
 
-    # 2. 梯度爆炸
+    # 2. 梯度爆炸 (组合规则)
     result = _detect_explosive(trace.steps, config)
     if result:
-        step, ev = result
+        step, severity, ev = result
+        if severity == "INFECTED":
+            rule = ev.get("rule", "combined")
+            if rule == "post_clip_combined":
+                reason = (
+                    f"post-clip 梯度持续超过 clip × {ev['threshold_factor']} "
+                    f"({ev['post_clip_grad_norm']} > {ev['gradient_clip']} × {ev['threshold_factor']}) "
+                    f"持续 {ev['persist_steps']} 步且 loss 未改善"
+                )
+                rec = "梯度裁剪没起作用。检查 clip 阈值, 或考虑降低 LR / 重启训练。"
+            else:
+                reason = (
+                    f"pre-clip 梯度持续异常 ({ev['grad_norm']} > {ev['abs_threshold']} 且 "
+                    f"> {ev['spike_ratio']} × 近期中位 {ev['recent_median']}) "
+                    f"持续 {ev['persist_steps']} 步且 loss 未改善"
+                )
+                rec = "看起来是真发散, 不只是 transformer 启动期高梯度。建议启用 grad clip 并降 LR。"
+            return ZombieReport(
+                run_id=trace.run_id,
+                severity="INFECTED",
+                zombie_class="INF_HOST",
+                infection_step=step,
+                reason=reason,
+                evidence=ev,
+                recommendation=rec,
+            )
+        # SUSPECT — 单点 legacy 命中, 组合判定不齐
         return ZombieReport(
             run_id=trace.run_id,
-            severity="INFECTED",
+            severity="SUSPECT",
             zombie_class="INF_HOST",
             infection_step=step,
-            reason=f"梯度爆炸（grad_norm={ev['grad_norm']:.2f} > {config.inf_grad_threshold}）",
+            reason=(
+                f"单点高 pre-clip grad_norm={ev['grad_norm']} > {ev['threshold']}, "
+                f"但未通过持续/改善组合判定。"
+            ),
             evidence=ev,
-            recommendation="启用梯度裁剪。继续跑可能变 ZOMBIE。",
+            recommendation="如需更精确判定, 训练侧 trace 应同时写 post_clip_grad_norm + gradient_clip。",
         )
 
     # 3. 冻僵肢体

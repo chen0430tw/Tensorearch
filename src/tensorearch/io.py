@@ -96,6 +96,11 @@ def load_training_trace_from_dict(payload: dict) -> TrainingTrace:
                 grad_norm=float(item.get("grad_norm", 0.0)),
                 curvature=float(item.get("curvature", 0.0)),
                 direction_consistency=float(item.get("direction_consistency", 0.0)),
+                train_loss_kind=str(item.get("train_loss_kind", "unknown")),
+                val_metric_observed=bool(item.get("val_metric_observed", False)),
+                grad_norm_kind=str(item.get("grad_norm_kind", "unknown")),
+                post_clip_grad_norm=float(item.get("post_clip_grad_norm", 0.0)),
+                gradient_clip=float(item.get("gradient_clip", 0.0)),
                 metadata=dict(item.get("metadata", {})),
             )
             for item in payload.get("steps", [])

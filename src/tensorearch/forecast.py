@@ -60,6 +60,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from .schema import ForecastResult, TrainingStep, TrainingTrace
+from .training_contract import validate_trace
 
 _ACTIVE_RUN_ID: str | None = None
 _ACTIVE_FINGERPRINT: str | None = None
@@ -445,6 +446,13 @@ def _run_heuristic_forecast(trace: TrainingTrace, config: ForecastConfig = DEFAU
                     and uncertainty < config.epsilon_uncertainty
                     and stability > config.epsilon_stability
                 ):
+                    # Stop window: stability criteria just became true at this
+                    # step. start = now (earliest safe stop). end = now + delta
+                    # (give a small buffer to confirm the prediction holds).
+                    # recommended = start (no reason to train longer once safe).
+                    _window_start = step.step
+                    _window_end_idx = min(idx + config.delta_steps, len(trace.steps)) - 1
+                    _window_end = trace.steps[_window_end_idx].step if _window_end_idx >= 0 else step.step
                     return ForecastResult(
                         run_id=trace.run_id,
                         predicted_final_score=prediction,
@@ -456,6 +464,9 @@ def _run_heuristic_forecast(trace: TrainingTrace, config: ForecastConfig = DEFAU
                         growth_fitness=fitness,
                         growth_gain=gain,
                         reason="prediction stabilized and uncertainty is low",
+                        decision_window_start=_window_start,
+                        decision_window_end=_window_end,
+                        recommended_stop_step=_window_start,
                         metadata={
                             "target_metric": trace.target_metric,
                             "decision_index": idx,
@@ -571,10 +582,26 @@ def forecast_trace(
     config so existing callers and CLI behavior are unchanged. Pass an
     explicit `predictor` to swap in an experimental implementation; the
     `config` argument is ignored when an explicit predictor is provided.
+
+    Always attaches `metadata.contract` from training_contract.validate_trace,
+    and floors confidence to 0.25 when the contract reports the trace is not
+    valid for forecasting (e.g. display-smoothed loss).
     """
     if predictor is None:
         predictor = HeuristicForecastPredictor(config=config)
-    return predictor.predict(trace)
+    result = predictor.predict(trace)
+    contract_report = validate_trace(trace)
+    contract_dict = contract_report.to_dict()
+    result.metadata["contract"] = contract_dict
+    if not contract_report.valid_for_forecast:
+        result.confidence = min(result.confidence, 0.25)
+        if "signal_quality" in result.metadata:
+            result.metadata["signal_quality"]["poor"] = True
+        result.reason = (
+            f"trace contract violation ({len(contract_report.warnings)} warnings); "
+            "predicted_final_score is not trustworthy. " + result.reason
+        )
+    return result
 
 
 def forecast_payload(trace: TrainingTrace, config: ForecastConfig = DEFAULT_FORECAST_CONFIG) -> dict[str, object]:

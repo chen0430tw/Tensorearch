@@ -671,12 +671,15 @@ def test_cli_forecast_json(tmp_path):
         ),
         encoding="utf-8",
     )
+    env = _env_with_src()
+    env["PYTHONIOENCODING"] = "utf-8"
     result = subprocess.run(
         [sys.executable, "-m", "tensorearch", "forecast", str(trace), "--json"],
         cwd=root,
-        env=_env_with_src(),
+        env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=True,
     )
     payload = json.loads(result.stdout)
@@ -722,6 +725,86 @@ def test_cli_zombie_json(tmp_path):
     assert payload["severity"] == "ZOMBIE"
     assert payload["zombie_class"] == "NAN_HOST"
     assert payload["infection_step"] == 3
+
+
+def test_zombie_high_preclip_with_improving_loss_is_suspect_not_infected():
+    """The pre-Codex bug: pre-clip grad_norm > 50 immediately classified INFECTED.
+    Now: high pre-clip alone with no spike + with improving loss → SUSPECT only."""
+    from tensorearch.zombie import assess_zombie
+    # 6 steps with grad_norm = 200 throughout (steady, not spike), loss decreasing
+    trace = load_training_trace_from_dict({
+        "run_id": "high_preclip_healthy",
+        "steps": [
+            {"step": i, "train_loss": 2.5 - 0.1 * i, "val_metric": 0.0,
+             "grad_norm": 200.0, "curvature": 0.0, "direction_consistency": 1.0,
+             "grad_norm_kind": "pre_clip"}
+            for i in range(1, 7)
+        ],
+    })
+    report = assess_zombie(trace)
+    # legacy single-point heuristic still surfaces something when pre-clip
+    # exceeds the (now raised) inf_grad_threshold; but loss is improving and
+    # the value is well below the abs_threshold (1000), so it must be SUSPECT
+    # at most, never INFECTED.
+    assert report.severity in ("ALIVE", "SUSPECT"), report
+    assert report.severity != "INFECTED"
+
+
+def test_zombie_post_clip_combined_rule_triggers_infected():
+    """When trace records post-clip + clip threshold, sustained breach → INFECTED."""
+    from tensorearch.zombie import assess_zombie
+    trace = load_training_trace_from_dict({
+        "run_id": "broken_clipper",
+        "steps": [
+            {"step": i, "train_loss": 5.0 + 0.5 * i, "val_metric": 0.0,
+             "grad_norm": 5.0, "post_clip_grad_norm": 5.0, "gradient_clip": 1.0,
+             "curvature": 0.0, "direction_consistency": 0.0,
+             "grad_norm_kind": "pre_clip"}
+            for i in range(1, 7)
+        ],
+    })
+    report = assess_zombie(trace)
+    assert report.severity == "INFECTED", report
+    assert report.zombie_class == "INF_HOST"
+    assert report.evidence.get("rule") == "post_clip_combined"
+
+
+def test_trace_contract_detects_display_smoothing():
+    """train_loss_kind='display_smoothed' -> CRITICAL warning + valid_for_forecast=False."""
+    from tensorearch.training_contract import validate_trace
+    trace = load_training_trace_from_dict({
+        "run_id": "smoothed",
+        "steps": [
+            {"step": i, "train_loss": 1.5 - 0.05 * i, "val_metric": 0.0,
+             "grad_norm": 1.0, "curvature": 0.0, "direction_consistency": 1.0,
+             "train_loss_kind": "display_smoothed"}
+            for i in range(1, 8)
+        ],
+    })
+    report = validate_trace(trace)
+    assert report.valid_for_forecast is False
+    codes = {w.code for w in report.warnings}
+    assert "DISPLAY_SMOOTHED_LOSS" in codes
+
+
+def test_forecast_returns_stop_window_when_stable():
+    """When the heuristic early-decision criteria fire, all three window fields are non-zero."""
+    # Construct a very stable, high-confidence trace
+    trace = load_training_trace_from_dict({
+        "run_id": "stable_run",
+        "steps": [
+            {"step": i, "train_loss": 0.5, "val_metric": 0.95,
+             "grad_norm": 0.5, "curvature": 0.001, "direction_consistency": 1.0,
+             "train_loss_kind": "raw_step_mean", "val_metric_observed": True,
+             "grad_norm_kind": "pre_clip", "gradient_clip": 1.0}
+            for i in range(1, 16)
+        ],
+    })
+    result = forecast_trace(trace)
+    assert result.continue_training_recommended is False
+    assert result.recommended_stop_step > 0
+    assert result.decision_window_start > 0
+    assert result.decision_window_end >= result.decision_window_start
 
 
 def test_forecast_signal_poor_floors_confidence():
