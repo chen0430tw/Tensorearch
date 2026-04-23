@@ -1,26 +1,54 @@
 from __future__ import annotations
 
 """
-Forecast training outcomes from short training prefixes.
+Single-run training-prefix forecasting.
 
-This module is intentionally a heuristic bootstrap model, not a paper-faithful
-implementation of any single forecasting method. Its current defaults are based
-on two design ideas:
+This module is the SECOND layer of Tensorearch's training-analysis pipeline.
+The three layers are deliberately kept separate (see
+docs/TRAINING_ANALYSIS_LAYERS.md):
 
-1. Gene-growth style propagation
-   Early local signals do not determine the outcome alone. We keep a rolling
-   "growth state" and let each new step inherit part of the previous state,
-   similar to how a growing organism preserves and propagates structure while
-   still reacting to local conditions.
+    1. zombie gate          (zombie.py)   — is this run still alive?
+    2. single-run forecast  (this module) — what will it converge to?
+    3. multi-run scheduler  (future)      — given many live candidates,
+                                            which should we keep budget on?
 
-2. Evolutionary early selection
-   The system is meant to decide whether a run already looks promising enough
-   to keep, or stable enough to stop early, before full training completes.
-   The thresholds therefore act like practical early-selection cutoffs rather
-   than theoretically derived constants.
+A predictor here only addresses layer 2: given a TrainingTrace prefix from one
+run, return a ForecastResult. It does not detect death (that is layer 1's job)
+and it does not allocate budget across runs (that is layer 3's job, and would
+follow Hyperband / ASHA / BOHB / PBT-style schedulers, none of which are a
+substitute for a single-run predictor).
 
-All scalar weights below are heuristic bootstrap defaults. They are not
-paper-derived constants and should be treated as calibration targets once real
+Predictor abstraction
+---------------------
+forecast_trace() dispatches to a ForecastPredictor. Two are provided:
+
+  * HeuristicForecastPredictor  — the original "gene-growth + evolutionary
+    early selection" bootstrap. All thresholds are heuristic defaults pending
+    real-data calibration. The biological metaphor is narrative; it has no
+    peer-reviewed analog as a learning-curve forecaster.
+
+  * LCPFNForecastPredictor      — experimental stub for the LC-PFN family
+    (Adriaensen et al., NeurIPS 2023). Calling .predict() raises
+    NotImplementedError. It is NOT a drop-in replacement: LC-PFN expects its
+    own curve format, does not natively consume our auxiliary signals
+    (grad_norm / curvature / direction_consistency), and ships as a research
+    repo rather than a production library. See the docs file above for the
+    integration plan.
+
+The default remains HeuristicForecastPredictor so existing callers and CLI
+behavior are unchanged.
+
+Calibration & benchmarks
+------------------------
+LC extrapolation is the right literature line for layer 2 (Domhan et al. 2015,
+LCNet 2017, LC-PFN 2023). LCDB 1.1 is one useful reference for "learning curves
+can be ill-behaved" but it studies sample-wise curves rather than the
+step/epoch-prefix problem this module solves, so it is not the only or even
+the most direct benchmark — a step/epoch-prefix curve set (e.g. NAS-Bench-201
+training trajectories) is a more apples-to-apples target.
+
+All scalar weights in HeuristicForecastPredictor are bootstrap defaults, not
+paper-derived constants, and remain calibration targets once real
 training-trace data is available.
 """
 
@@ -29,6 +57,7 @@ import json
 import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 from .schema import ForecastResult, TrainingStep, TrainingTrace
 
@@ -305,7 +334,7 @@ def _confidence_from_uncertainty(sigma: float, config: ForecastConfig) -> float:
     return _clamp(math.exp(-((sigma * sigma) / (tau * tau))))
 
 
-def forecast_trace(trace: TrainingTrace, config: ForecastConfig = DEFAULT_FORECAST_CONFIG) -> ForecastResult:
+def _run_heuristic_forecast(trace: TrainingTrace, config: ForecastConfig = DEFAULT_FORECAST_CONFIG) -> ForecastResult:
     if not trace.steps:
         return ForecastResult(
             run_id=trace.run_id,
@@ -409,6 +438,88 @@ def forecast_trace(trace: TrainingTrace, config: ForecastConfig = DEFAULT_FORECA
         )
     finally:
         _end_run(trace)
+
+
+@runtime_checkable
+class ForecastPredictor(Protocol):
+    """Single-run training-prefix predictor contract.
+
+    Implementations consume a TrainingTrace (full or prefix) and return a
+    ForecastResult. They sit at layer 2 of the training-analysis pipeline; see
+    the module docstring and docs/TRAINING_ANALYSIS_LAYERS.md for the layer
+    separation. Implementations should be stateless across calls (any
+    intra-trace state must be reset at the start of predict()).
+    """
+
+    name: str
+
+    def predict(self, trace: TrainingTrace) -> ForecastResult: ...
+
+
+@dataclass
+class HeuristicForecastPredictor:
+    """Bootstrap heuristic: gene-growth EMA + evolutionary early selection.
+
+    Wraps the original heuristic logic. All thresholds in `config` are
+    bootstrap defaults pending real-data calibration. The biological metaphor
+    is narrative only — there is no peer-reviewed analog of this scheme as a
+    learning-curve forecaster.
+    """
+
+    config: ForecastConfig = DEFAULT_FORECAST_CONFIG
+    name: str = "heuristic"
+
+    def predict(self, trace: TrainingTrace) -> ForecastResult:
+        return _run_heuristic_forecast(trace, self.config)
+
+
+@dataclass
+class LCPFNForecastPredictor:
+    """Experimental stub for an LC-PFN-backed predictor (not implemented).
+
+    LC-PFN (Adriaensen et al., NeurIPS 2023) is the most promising direction
+    for replacing the heuristic, but it is NOT a drop-in:
+
+      * It expects its own learning-curve input format (validation-metric
+        sequence with a curve-prior assumption), not our richer TrainingStep
+        with grad_norm / curvature / direction_consistency.
+      * It ships as a research repo (automl/lc-pfns) with model artifacts,
+        not as a maintained pip package.
+      * Layer-1 zombie filtering, layer-3 scheduling, and our auxiliary
+        signals all sit outside its scope and need an adapter design.
+
+    This stub exists so the abstraction is exercised end-to-end and so an
+    experimental branch can fill it in without churning the main API. Calling
+    `.predict()` raises NotImplementedError.
+    """
+
+    name: str = "lcpfn"
+
+    def predict(self, trace: TrainingTrace) -> ForecastResult:
+        raise NotImplementedError(
+            "LCPFNForecastPredictor is an experimental stub. "
+            "See docs/TRAINING_ANALYSIS_LAYERS.md for the integration plan."
+        )
+
+
+DEFAULT_PREDICTOR: ForecastPredictor = HeuristicForecastPredictor()
+
+
+def forecast_trace(
+    trace: TrainingTrace,
+    config: ForecastConfig = DEFAULT_FORECAST_CONFIG,
+    predictor: ForecastPredictor | None = None,
+) -> ForecastResult:
+    """Dispatch a forecast to the chosen predictor.
+
+    Defaults to HeuristicForecastPredictor with the supplied (or default)
+    config so existing callers and CLI behavior are unchanged. Pass an
+    explicit `predictor` to swap in an experimental implementation; the
+    `config` argument is ignored when an explicit predictor is provided.
+    """
+    if predictor is None:
+        predictor = HeuristicForecastPredictor(config=config)
+    return predictor.predict(trace)
 
 
 def forecast_payload(trace: TrainingTrace, config: ForecastConfig = DEFAULT_FORECAST_CONFIG) -> dict[str, object]:
