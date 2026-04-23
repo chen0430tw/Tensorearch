@@ -263,15 +263,41 @@ def _detect_explosive(steps: list[TrainingStep], config: ZombieConfig) -> tuple[
             "loss_improving": False,
         }
 
-    # SUSPECT 路径：legacy 单点超 inf_grad_threshold 但组合判定没过
+    # SUSPECT 路径：legacy 单点超 inf_grad_threshold 但组合判定没过。
+    # 但若 trace 已经写了 post_clip 且 clipper 工作正常 (post_clip 未爆 clip 阈值),
+    # 那 high pre-clip 只是 clipper 在做它该做的事情, 不需要 SUSPECT 提醒——直接放行。
     for s in steps:
-        if _is_finite(s.grad_norm) and s.grad_norm > config.inf_grad_threshold:
-            return s.step, "SUSPECT", {
-                "rule": "legacy_single_point",
-                "grad_norm": round(s.grad_norm, 4),
-                "threshold": config.inf_grad_threshold,
-                "note": "高 pre-clip 但未触发组合规则; 可能是 transformer 早期未 warmup 的正常爆梯度, 已被 clipper 处理。建议升级 trace 写 post_clip_grad_norm + gradient_clip 以获得更准确判定。",
-            }
+        if not (_is_finite(s.grad_norm) and s.grad_norm > config.inf_grad_threshold):
+            continue
+        # 健康 clipper 检查：如果该步有真实 post_clip + clip threshold,
+        # 且 post_clip 在 clip × postclip_factor 之内, 视为 "clipper 在工作", 跳过。
+        has_post_clip = (
+            _is_finite(s.post_clip_grad_norm)
+            and s.post_clip_grad_norm > 0
+            and s.gradient_clip > 0
+        )
+        if has_post_clip and s.post_clip_grad_norm <= s.gradient_clip * config.explosive_postclip_factor:
+            continue  # clipper 健康, pre-clip 高是正常 warmup 现象
+        # 否则保留 SUSPECT, 但根据 post_clip 是否存在给不同 note
+        if has_post_clip:
+            note = (
+                f"高 pre-clip ({round(s.grad_norm, 2)}) 配上 post_clip "
+                f"({round(s.post_clip_grad_norm, 4)}) > clip × {config.explosive_postclip_factor}, "
+                "clipper 处于压力区。建议降低 LR 或检查 clip 阈值。"
+            )
+        else:
+            note = (
+                "高 pre-clip 但未触发组合规则; trace 缺 post_clip_grad_norm + "
+                "gradient_clip, zombie 无法判定 clipper 是否在工作。建议训练侧补这两个字段。"
+            )
+        return s.step, "SUSPECT", {
+            "rule": "legacy_single_point",
+            "grad_norm": round(s.grad_norm, 4),
+            "threshold": config.inf_grad_threshold,
+            "post_clip_grad_norm": round(s.post_clip_grad_norm, 4) if has_post_clip else None,
+            "gradient_clip": round(s.gradient_clip, 4) if has_post_clip else None,
+            "note": note,
+        }
     return None
 
 

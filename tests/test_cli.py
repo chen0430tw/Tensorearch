@@ -750,6 +750,28 @@ def test_zombie_high_preclip_with_improving_loss_is_suspect_not_infected():
     assert report.severity != "INFECTED"
 
 
+def test_zombie_healthy_clipper_with_high_preclip_returns_alive_not_suspect():
+    """If trace records post_clip and clipper is doing its job (post_clip <= clip*factor),
+    high pre-clip alone must NOT trigger SUSPECT — it's just normal warmup behavior."""
+    from tensorearch.zombie import assess_zombie
+    trace = load_training_trace_from_dict({
+        "run_id": "healthy_clipper_high_preclip",
+        "steps": [
+            {"step": i, "train_loss": 11.0 - 0.05 * i, "val_metric": 0.0,
+             "grad_norm": 5000.0,                  # huge pre-clip
+             "post_clip_grad_norm": 1.0,            # but clipper neutralized it
+             "gradient_clip": 1.0,
+             "curvature": 0.01, "direction_consistency": 1.0,
+             "grad_norm_kind": "pre_clip"}
+            for i in range(1, 8)
+        ],
+    })
+    report = assess_zombie(trace)
+    # Clipper is healthy (post_clip == clip == 1.0), loss is improving — no zombie behavior.
+    assert report.severity == "ALIVE", report
+    assert report.zombie_class == "HEALTHY"
+
+
 def test_zombie_post_clip_combined_rule_triggers_infected():
     """When trace records post-clip + clip threshold, sustained breach → INFECTED."""
     from tensorearch.zombie import assess_zombie
